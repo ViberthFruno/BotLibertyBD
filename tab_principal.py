@@ -40,9 +40,15 @@ class PrincipalTab:
         # Configuraciones (inicialmente vacías)
         self.postgres_config = {}
         self.email_config = {}
+        self.search_params = {"titles": []}
+        self.notify_users = []
 
         # Variables para la UI
         self.log_text = None
+
+        # Variables para el monitoreo
+        self.monitoring_active = False
+        self.monitoring_job = None
 
         # Crear la estructura de la pestaña
         self._create_principal_tab()
@@ -53,14 +59,42 @@ class PrincipalTab:
         main_frame = ttk.Frame(self.parent)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Título del panel principal
-        title_frame = ttk.Frame(main_frame)
-        title_frame.pack(fill=tk.X, padx=5, pady=(5, 15))
+        # ========== PANEL PRINCIPAL (ARRIBA) ==========
+        panel_frame = ttk.LabelFrame(main_frame, text="Panel Principal", padding=20)
+        panel_frame.pack(fill=tk.X, padx=5, pady=(5, 15))
 
-        title_label = ttk.Label(title_frame, text="Panel Principal", font=("Arial", 16, "bold"))
-        title_label.pack()
+        # Título del panel
+        panel_title = ttk.Label(panel_frame, text="Control de Monitoreo", font=("Arial", 14, "bold"))
+        panel_title.pack(pady=(0, 15))
 
-        # Frame dividido en dos columnas
+        # Botón grande de monitoreo
+        self.monitoring_button = tk.Button(
+            panel_frame,
+            text="▶ Iniciar Monitoreo",
+            font=("Arial", 14, "bold"),
+            bg="#4CAF50",
+            fg="white",
+            activebackground="#45a049",
+            activeforeground="white",
+            relief=tk.RAISED,
+            bd=3,
+            padx=30,
+            pady=15,
+            cursor="hand2",
+            command=self._toggle_monitoring
+        )
+        self.monitoring_button.pack()
+
+        # Estado del monitoreo
+        self.monitoring_status_label = ttk.Label(
+            panel_frame,
+            text="Estado: Detenido",
+            font=("Arial", 10),
+            foreground="red"
+        )
+        self.monitoring_status_label.pack(pady=(10, 0))
+
+        # ========== CONTENIDO INFERIOR (CONFIG + LOGS) ==========
         content_frame = ttk.Frame(main_frame)
         content_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
@@ -100,6 +134,27 @@ class PrincipalTab:
             width=25
         )
         self.email_config_button.pack(pady=5)
+
+        # Separador
+        ttk.Separator(config_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
+
+        # Botón para Parámetros de Búsqueda
+        self.search_params_button = ttk.Button(
+            config_frame,
+            text="🔍 Parámetros de Búsqueda",
+            command=self._open_search_params,
+            width=25
+        )
+        self.search_params_button.pack(pady=5)
+
+        # Botón para Usuarios a Notificar
+        self.notify_users_button = ttk.Button(
+            config_frame,
+            text="👥 Usuarios a Notificar",
+            command=self._open_notify_users,
+            width=25
+        )
+        self.notify_users_button.pack(pady=5)
 
         # Información de estado
         self.status_info = ttk.Label(
@@ -226,6 +281,8 @@ class PrincipalTab:
             full_config = {
                 "postgres": self.postgres_config,
                 "email": self.email_config,
+                "search_params": self.search_params,
+                "notify_users": self.notify_users,
             }
 
             if self.save_config_callback(full_config):
@@ -258,6 +315,152 @@ class PrincipalTab:
             color = "red"
 
         self.status_info.configure(text=status_text, foreground=color)
+
+    def _open_search_params(self):
+        """Abre el diálogo de Parámetros de Búsqueda."""
+        try:
+            from parametros_dialog import ParametrosDialog
+            dialog = ParametrosDialog(self.parent, existing_params=self.search_params)
+            self.parent.wait_window(dialog)
+
+            if dialog.result:
+                self.search_params = dialog.result.copy()
+                self._save_all_config()
+                self.add_log(f"Parámetros de búsqueda actualizados: {len(self.search_params.get('titles', []))} título(s)", "SUCCESS")
+                logger.info("Parámetros de búsqueda actualizados por usuario")
+            else:
+                self.add_log("Configuración de parámetros cancelada", "INFO")
+
+        except Exception as e:
+            error_msg = f"Error al abrir parámetros de búsqueda: {str(e)}"
+            self.add_log(error_msg, "ERROR")
+            messagebox.showerror("Error", f"No se pudo abrir la configuración:\n\n{str(e)}")
+
+    def _open_notify_users(self):
+        """Abre el diálogo de Usuarios a Notificar."""
+        try:
+            from usuarios_dialog import UsuariosDialog
+            dialog = UsuariosDialog(self.parent, existing_users=self.notify_users)
+            self.parent.wait_window(dialog)
+
+            if dialog.result is not None:
+                self.notify_users = dialog.result.copy()
+                self._save_all_config()
+                self.add_log(f"Usuarios a notificar actualizados: {len(self.notify_users)} usuario(s)", "SUCCESS")
+                logger.info("Usuarios a notificar actualizados por usuario")
+            else:
+                self.add_log("Configuración de usuarios cancelada", "INFO")
+
+        except Exception as e:
+            error_msg = f"Error al abrir usuarios a notificar: {str(e)}"
+            self.add_log(error_msg, "ERROR")
+            messagebox.showerror("Error", f"No se pudo abrir la configuración:\n\n{str(e)}")
+
+    def _toggle_monitoring(self):
+        """Inicia o detiene el monitoreo de correos."""
+        if not self.monitoring_active:
+            # Iniciar monitoreo
+            if not self._validate_monitoring_config():
+                return
+
+            self.monitoring_active = True
+            self.monitoring_button.configure(
+                text="⏸ Detener Monitoreo",
+                bg="#f44336"
+            )
+            self.monitoring_status_label.configure(
+                text="Estado: Activo",
+                foreground="green"
+            )
+            self.add_log("Monitoreo iniciado", "SUCCESS")
+            self._start_monitoring_cycle()
+
+        else:
+            # Detener monitoreo
+            self.monitoring_active = False
+            if self.monitoring_job:
+                self.parent.after_cancel(self.monitoring_job)
+                self.monitoring_job = None
+
+            self.monitoring_button.configure(
+                text="▶ Iniciar Monitoreo",
+                bg="#4CAF50"
+            )
+            self.monitoring_status_label.configure(
+                text="Estado: Detenido",
+                foreground="red"
+            )
+            self.add_log("Monitoreo detenido", "INFO")
+
+    def _validate_monitoring_config(self):
+        """Valida que la configuración necesaria esté completa para el monitoreo."""
+        if not self.email_config:
+            messagebox.showwarning(
+                "Configuración Incompleta",
+                "Debe configurar el correo electrónico antes de iniciar el monitoreo."
+            )
+            self.add_log("Intento de iniciar monitoreo sin configuración de correo", "WARNING")
+            return False
+
+        if not self.search_params.get("titles"):
+            messagebox.showwarning(
+                "Configuración Incompleta",
+                "Debe configurar al menos un parámetro de búsqueda antes de iniciar el monitoreo."
+            )
+            self.add_log("Intento de iniciar monitoreo sin parámetros de búsqueda", "WARNING")
+            return False
+
+        if not self.notify_users:
+            messagebox.showwarning(
+                "Configuración Incompleta",
+                "Debe configurar al menos un usuario a notificar antes de iniciar el monitoreo."
+            )
+            self.add_log("Intento de iniciar monitoreo sin usuarios a notificar", "WARNING")
+            return False
+
+        return True
+
+    def _start_monitoring_cycle(self):
+        """Inicia un ciclo de monitoreo."""
+        if not self.monitoring_active:
+            return
+
+        self.add_log("Ejecutando ciclo de monitoreo...", "INFO")
+        self._execute_monitoring()
+
+        # Programar el próximo ciclo (cada 5 minutos = 300000 ms)
+        self.monitoring_job = self.parent.after(300000, self._start_monitoring_cycle)
+
+    def _execute_monitoring(self):
+        """Ejecuta el proceso de monitoreo de correos."""
+        if not self.email_connector:
+            self.add_log("Error: No hay conector de correo disponible", "ERROR")
+            return
+
+        try:
+            # Buscar correos con los títulos configurados
+            for title in self.search_params.get("titles", []):
+                self.add_log(f"Buscando correos con título: '{title}'", "INFO")
+
+                result = self.email_connector.monitor_and_notify(
+                    title_filter=title,
+                    notify_emails=self.notify_users,
+                    status_callback=lambda msg, level="INFO": self.add_log(msg, level)
+                )
+
+                if result.get("success"):
+                    matching = result.get("matching_items", 0)
+                    if matching > 0:
+                        self.add_log(f"✓ {matching} correo(s) encontrado(s) y procesado(s)", "SUCCESS")
+                    else:
+                        self.add_log("No se encontraron correos nuevos", "INFO")
+                else:
+                    self.add_log(f"Error en monitoreo: {result.get('message', 'Error desconocido')}", "ERROR")
+
+        except Exception as e:
+            error_msg = f"Error durante el monitoreo: {str(e)}"
+            self.add_log(error_msg, "ERROR")
+            logger.error(error_msg)
 
     # ===============================
     # INTERFAZ PARA OTROS MÓDULOS
@@ -368,6 +571,8 @@ class PrincipalTab:
             # Extraer configuraciones
             self.postgres_config = config.get("postgres", {}).copy()
             self.email_config = config.get("email", {}).copy()
+            self.search_params = config.get("search_params", {"titles": []}).copy()
+            self.notify_users = config.get("notify_users", []).copy()
 
             # Crear conectores con las configuraciones
             if self.postgres_config:
@@ -378,11 +583,19 @@ class PrincipalTab:
                 self._create_email_connector()
                 self.add_log("Configuración de correo cargada", "SUCCESS")
 
+            # Informar sobre parámetros de búsqueda y usuarios
+            if self.search_params.get("titles"):
+                self.add_log(f"Parámetros de búsqueda cargados: {len(self.search_params['titles'])} título(s)", "SUCCESS")
+
+            if self.notify_users:
+                self.add_log(f"Usuarios a notificar cargados: {len(self.notify_users)} usuario(s)", "SUCCESS")
+
             # Actualizar estado
             self._update_status_info()
 
             logger.info(
-                f"Configuración aplicada - PostgreSQL: {bool(self.postgres_config)}, Correo: {bool(self.email_config)}")
+                f"Configuración aplicada - PostgreSQL: {bool(self.postgres_config)}, Correo: {bool(self.email_config)}, "
+                f"Parámetros: {len(self.search_params.get('titles', []))}, Usuarios: {len(self.notify_users)}")
 
         except Exception as e:
             error_msg = f"Error al aplicar configuración: {str(e)}"
