@@ -67,23 +67,14 @@ class PrincipalTab:
         panel_title = ttk.Label(panel_frame, text="Control de Monitoreo", font=("Arial", 14, "bold"))
         panel_title.pack(pady=(0, 15))
 
-        # Botón grande de monitoreo
-        self.monitoring_button = tk.Button(
+        # Botón de monitoreo
+        self.monitoring_button = ttk.Button(
             panel_frame,
             text="▶ Iniciar Monitoreo",
-            font=("Arial", 14, "bold"),
-            bg="#4CAF50",
-            fg="white",
-            activebackground="#45a049",
-            activeforeground="white",
-            relief=tk.RAISED,
-            bd=3,
-            padx=30,
-            pady=15,
-            cursor="hand2",
-            command=self._toggle_monitoring
+            command=self._toggle_monitoring,
+            width=30
         )
-        self.monitoring_button.pack()
+        self.monitoring_button.pack(pady=10)
 
         # Estado del monitoreo
         self.monitoring_status_label = ttk.Label(
@@ -92,7 +83,7 @@ class PrincipalTab:
             font=("Arial", 10),
             foreground="red"
         )
-        self.monitoring_status_label.pack(pady=(10, 0))
+        self.monitoring_status_label.pack(pady=(5, 0))
 
         # ========== CONTENIDO INFERIOR (CONFIG + LOGS) ==========
         content_frame = ttk.Frame(main_frame)
@@ -364,10 +355,7 @@ class PrincipalTab:
                 return
 
             self.monitoring_active = True
-            self.monitoring_button.configure(
-                text="⏸ Detener Monitoreo",
-                bg="#f44336"
-            )
+            self.monitoring_button.configure(text="⏸ Detener Monitoreo")
             self.monitoring_status_label.configure(
                 text="Estado: Activo",
                 foreground="green"
@@ -382,10 +370,7 @@ class PrincipalTab:
                 self.parent.after_cancel(self.monitoring_job)
                 self.monitoring_job = None
 
-            self.monitoring_button.configure(
-                text="▶ Iniciar Monitoreo",
-                bg="#4CAF50"
-            )
+            self.monitoring_button.configure(text="▶ Iniciar Monitoreo")
             self.monitoring_status_label.configure(
                 text="Estado: Detenido",
                 foreground="red"
