@@ -14,7 +14,6 @@ from datetime import datetime
 
 from logger import logger
 from postgres_connector import PostgresConnector
-from profile_manager import ProfileManager
 from conexion_dialog import ConexionDialog
 from correo_dialog import CorreoDialog
 from email_connector import EmailConnector
@@ -43,26 +42,10 @@ class PrincipalTab:
         self.email_config = {}
 
         # Variables para la UI
-        self.profiles_table = None
         self.log_text = None
-        self.progress_bar = None
-        self.edit_button = None
-        self.delete_button = None
-        self.execute_button = None
-        self.selected_profile_index = None
 
         # Crear la estructura de la pestaña
         self._create_principal_tab()
-
-        # Crear gestor de perfiles
-        self.profile_manager = ProfileManager(
-            parent_frame,
-            self,
-            self.get_connector
-        )
-
-        # Inicializar el gestor de perfiles
-        self.profile_manager.initialize()
 
     def _create_principal_tab(self):
         """Crea los widgets de la pestaña principal."""
@@ -70,105 +53,29 @@ class PrincipalTab:
         main_frame = ttk.Frame(self.parent)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Frame superior para perfiles de automatización
-        top_frame = ttk.LabelFrame(main_frame, text="Perfiles de Automatización")
-        top_frame.pack(fill=tk.X, expand=False, padx=5, pady=5)
+        # Título del panel principal
+        title_frame = ttk.Frame(main_frame)
+        title_frame.pack(fill=tk.X, padx=5, pady=(5, 15))
 
-        # Frame inferior dividido en dos columnas
-        bottom_frame = ttk.Frame(main_frame)
-        bottom_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        title_label = ttk.Label(title_frame, text="Panel Principal", font=("Arial", 16, "bold"))
+        title_label.pack()
 
-        # Columna izquierda: Configuración (SIMPLIFICADA)
-        left_frame = ttk.LabelFrame(bottom_frame, text="Configuración")
+        # Frame dividido en dos columnas
+        content_frame = ttk.Frame(main_frame)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Columna izquierda: Configuración
+        left_frame = ttk.LabelFrame(content_frame, text="Configuración")
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
 
         # Columna derecha: Registro de actividad
-        right_frame = ttk.LabelFrame(bottom_frame, text="Registro de Actividad")
+        right_frame = ttk.LabelFrame(content_frame, text="Registro de Actividad")
         right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
 
         # Crear componentes de cada sección
-        self._create_profiles_section(top_frame)
         self._create_configuration_section(left_frame)
         self._create_activity_section(right_frame)
 
-    def _create_profiles_section(self, parent):
-        """Crea la sección de perfiles de automatización."""
-        # Frame para tabla de perfiles
-        table_frame = ttk.Frame(parent)
-        table_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-
-        # Crear tabla de perfiles con Treeview
-        columns = ('nombre', 'carpeta', 'hora', 'estado')
-        self.profiles_table = ttk.Treeview(table_frame, columns=columns, show='headings',
-                                           selectmode='browse', height=6)
-
-        # Configurar encabezados
-        self.profiles_table.heading('nombre', text='Nombre')
-        self.profiles_table.heading('carpeta', text='Bandeja')
-        self.profiles_table.heading('hora', text='Hora')
-        self.profiles_table.heading('estado', text='Estado')
-
-        # Configurar columnas
-        self.profiles_table.column('nombre', width=200, minwidth=150)
-        self.profiles_table.column('carpeta', width=200, minwidth=150)
-        self.profiles_table.column('hora', width=70, minwidth=70, anchor=tk.CENTER)
-        self.profiles_table.column('estado', width=70, minwidth=70, anchor=tk.CENTER)
-
-        # Scrollbar para la tabla
-        scrollbar = ttk.Scrollbar(table_frame, orient="vertical", command=self.profiles_table.yview)
-        self.profiles_table.configure(yscrollcommand=scrollbar.set)
-
-        # Empaquetar tabla y scrollbar
-        self.profiles_table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # Configurar evento de selección
-        self.profiles_table.bind('<<TreeviewSelect>>', self._on_profile_selected)
-
-        # Frame para botones
-        buttons_frame = ttk.Frame(parent)
-        buttons_frame.pack(fill=tk.X, padx=5, pady=5)
-
-        # Botones de acción
-        add_button = ttk.Button(
-            buttons_frame,
-            text="Añadir Perfil",
-            command=self._on_add_profile
-        )
-        add_button.pack(side=tk.LEFT, padx=5)
-
-        self.edit_button = ttk.Button(
-            buttons_frame,
-            text="Editar Perfil",
-            command=self._on_edit_profile,
-            state="disabled"
-        )
-        self.edit_button.pack(side=tk.LEFT, padx=5)
-
-        self.delete_button = ttk.Button(
-            buttons_frame,
-            text="Eliminar Perfil",
-            command=self._on_delete_profile,
-            state="disabled"
-        )
-        self.delete_button.pack(side=tk.LEFT, padx=5)
-
-        self.execute_button = ttk.Button(
-            buttons_frame,
-            text="Ejecutar Perfil",
-            command=self._on_execute_profile,
-            state="disabled"
-        )
-        self.execute_button.pack(side=tk.LEFT, padx=5)
-
-        # Barra de progreso
-        progress_frame = ttk.Frame(parent)
-        progress_frame.pack(fill=tk.X, padx=5, pady=5)
-
-        ttk.Label(progress_frame, text="Progreso:").pack(anchor=tk.W, pady=(0, 5))
-
-        self.progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", mode="determinate")
-        self.progress_bar.pack(fill=tk.X)
 
     def _create_configuration_section(self, parent):
         """Crea la sección de configuración simplificada."""
@@ -353,91 +260,8 @@ class PrincipalTab:
         self.status_info.configure(text=status_text, foreground=color)
 
     # ===============================
-    # GESTIÓN DE PERFILES
-    # ===============================
-
-    def _on_profile_selected(self, event):
-        """Maneja la selección de un perfil en la tabla."""
-        selection = self.profiles_table.selection()
-        if selection:
-            item = selection[0]
-            item_values = self.profiles_table.item(item, 'values')
-            if len(item_values) > 4:  # El índice es el quinto valor (oculto)
-                self.selected_profile_index = int(item_values[4])
-
-                # Activar botones
-                self.edit_button.configure(state="normal")
-                self.delete_button.configure(state="normal")
-                self.execute_button.configure(state="normal")
-
-    def _on_add_profile(self):
-        """Maneja el evento de añadir perfil."""
-        self.profile_manager.add_profile()
-
-    def _on_edit_profile(self):
-        """Maneja el evento de editar perfil."""
-        self.profile_manager.edit_profile()
-
-    def _on_delete_profile(self):
-        """Maneja el evento de eliminar perfil."""
-        self.profile_manager.delete_profile()
-
-    def _on_execute_profile(self):
-        """Maneja el evento de ejecutar perfil manualmente."""
-        self.profile_manager.execute_profile_manually()
-
-    # ===============================
     # INTERFAZ PARA OTROS MÓDULOS
     # ===============================
-
-    def refresh_profiles_table(self, profiles):
-        """Actualiza la tabla de perfiles con los datos actuales."""
-        # Limpiar tabla actual
-        for item in self.profiles_table.get_children():
-            self.profiles_table.delete(item)
-
-        # Resetear selección
-        self.selected_profile_index = None
-        self.edit_button.configure(state="disabled")
-        self.delete_button.configure(state="disabled")
-        self.execute_button.configure(state="disabled")
-
-        # Añadir perfiles a la tabla
-        for i, profile in enumerate(profiles):
-            name = profile.get("name", "Sin nombre")
-            folder_path = profile.get("folder_path", "INBOX")
-            folder_name = self._format_mailbox_name(folder_path)
-
-            hour = profile.get("hour", 0)
-            minute = profile.get("minute", 0)
-            time_text = f"{hour:02d}:{minute:02d}"
-
-            enabled = profile.get("enabled", False)
-            status_text = "Activo" if enabled else "Inactivo"
-
-            # Añadir a la tabla (con el índice como último valor)
-            self.profiles_table.insert("", tk.END, values=(name, folder_name, time_text, status_text, i))
-
-            # Aplicar colores según estado
-            if enabled:
-                item = self.profiles_table.get_children()[-1]
-                self.profiles_table.item(item, tags=("enabled",))
-
-        # Configurar tags para colores
-        self.profiles_table.tag_configure("enabled", foreground="green")
-
-    @staticmethod
-    def _format_mailbox_name(folder_path):
-        """Devuelve un nombre legible para la bandeja utilizada por el perfil."""
-        normalized = (folder_path or "").strip()
-        if not normalized:
-            return "Bandeja de entrada"
-
-        normalized = normalized.replace("\\", "/")
-        if normalized.upper() == "INBOX":
-            return "Bandeja de entrada"
-
-        return normalized.split("/")[-1] or "Bandeja de entrada"
 
     def add_log(self, message, level="INFO"):
         """Añade un mensaje al área de logs."""
@@ -506,17 +330,6 @@ class PrincipalTab:
         self.log_text.delete(1.0, tk.END)
         self.log_text.configure(state=tk.DISABLED)
 
-    def update_progress(self, progress):
-        """Actualiza la barra de progreso."""
-        if isinstance(progress, float) and 0 <= progress <= 1:
-            self.progress_bar["value"] = progress * 100
-        else:
-            # Si progress es un valor entero entre 0 y 100
-            self.progress_bar["value"] = progress
-
-    def get_selected_profile_index(self):
-        """Obtiene el índice del perfil seleccionado."""
-        return self.selected_profile_index
 
     def get_connector(self):
         """Proporciona acceso al conector PostgreSQL."""
@@ -576,8 +389,3 @@ class PrincipalTab:
             self.add_log(error_msg, "ERROR")
             logger.error(error_msg)
 
-    def stop_profile_timer(self):
-        """Detiene el temporizador de verificación de perfiles."""
-        if hasattr(self.profile_manager, 'profile_timer') and self.profile_manager.profile_timer:
-            self.parent.after_cancel(self.profile_manager.profile_timer)
-            logger.info("Temporizador de perfiles detenido")

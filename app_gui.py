@@ -15,7 +15,6 @@ from tkinter import ttk, messagebox
 
 from logger import logger
 from postgres_connector import is_psycopg2_installed
-from tab_subida import SubidaManualTab
 from tab_principal import PrincipalTab
 
 # Definición de tamaño para la ventana
@@ -119,21 +118,12 @@ class EnlaceDBApp(tk.Tk):
         main_frame = ttk.Frame(self)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # Crear pestañas usando ttk.Notebook
-        self.notebook = ttk.Notebook(main_frame)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
+        # Crear frame para la pestaña principal
+        principal_frame = ttk.Frame(main_frame)
+        principal_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Crear frames para cada pestaña
-        self.tab_frames = {}
-        tabs = ["Principal", "Subida Manual"]
-
-        for tab_name in tabs:
-            self.tab_frames[tab_name] = ttk.Frame(self.notebook)
-            self.notebook.add(self.tab_frames[tab_name], text=tab_name)
-
-        # Inicializar las pestañas como componentes separados
-        self.tab_principal = PrincipalTab(self.tab_frames["Principal"], self.save_config)
-        self.tab_subida = SubidaManualTab(self.tab_frames["Subida Manual"], self.get_connector)
+        # Inicializar la pestaña principal
+        self.tab_principal = PrincipalTab(principal_frame, self.save_config)
 
     def get_connector(self):
         """
@@ -292,10 +282,6 @@ class EnlaceDBApp(tk.Tk):
     def destroy(self):
         """Override del método destroy para limpiar recursos al cerrar."""
         try:
-            # Detener temporizadores de perfiles si existen
-            if hasattr(self, 'tab_principal') and hasattr(self.tab_principal, 'stop_profile_timer'):
-                self.tab_principal.stop_profile_timer()
-
             logger.info("Aplicación cerrada correctamente")
 
         except Exception as e:
