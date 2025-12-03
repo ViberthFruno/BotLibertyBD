@@ -162,3 +162,134 @@ class EmailConnector:
         results["success"] = True
         results["message"] = f"{results['matching_items']} correos coincidentes"
         return results
+
+    def send_simple_email(self, to_email, subject, body):
+        """Envía un correo simple a un destinatario."""
+        try:
+            from email.mime.text import MIMEText
+            from email.mime.multipart import MIMEMultipart
+
+            msg = MIMEMultipart()
+            msg['From'] = self.email_address
+            msg['To'] = to_email
+            msg['Subject'] = subject
+
+            msg.attach(MIMEText(body, 'plain'))
+
+            with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=10) as server:
+                if self.use_tls:
+                    server.starttls()
+                server.login(self.email_address, self.password)
+                server.send_message(msg)
+
+            logger.info(f"Correo enviado a {to_email}")
+            return True, "Correo enviado exitosamente"
+
+        except Exception as e:
+            logger.error(f"Error al enviar correo a {to_email}: {e}")
+            return False, str(e)
+
+    def monitor_and_notify(self, title_filter, notify_emails, folder_path="INBOX",
+                          status_callback=None):
+        """
+        Monitorea correos no leídos con un título específico, los marca como leídos
+        y envía notificaciones a los usuarios especificados.
+        """
+        results = {
+            "success": False,
+            "total_items": 0,
+            "matching_items": 0,
+            "notified_users": 0,
+            "errors": [],
+            "message": ""
+        }
+
+        folder_path = (folder_path or "INBOX").strip() or "INBOX"
+        prepared_filters = self._prepare_title_filters(title_filter)
+
+        try:
+            with imaplib.IMAP4_SSL(self.imap_server, self.imap_port) as imap:
+                imap.login(self.email_address, self.password)
+                imap.select(folder_path)
+
+                # Buscar solo correos NO LEÍDOS de hoy
+                date_str = datetime.now().strftime('%d-%b-%Y')
+                typ, data = imap.search(None, 'UNSEEN', 'ON', date_str)
+
+                if typ != 'OK':
+                    results["message"] = "Error en búsqueda IMAP"
+                    return results
+
+                email_ids = data[0].split()
+                results["total_items"] = len(email_ids)
+
+                if not email_ids:
+                    results["success"] = True
+                    results["message"] = "No hay correos nuevos"
+                    return results
+
+                # Procesar cada correo
+                for num in email_ids:
+                    # Leer encabezado para obtener asunto
+                    typ, header_data = imap.fetch(num, '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM)])')
+                    if typ != 'OK':
+                        continue
+
+                    header_msg = email.message_from_bytes(header_data[0][1])
+                    subject = header_msg.get('Subject', '')
+                    from_email = header_msg.get('From', '')
+
+                    # Verificar si el asunto coincide con el filtro
+                    if not self._subject_matches(subject, prepared_filters):
+                        continue
+
+                    results["matching_items"] += 1
+
+                    # Marcar como leído
+                    imap.store(num, '+FLAGS', '\\Seen')
+
+                    if status_callback:
+                        status_callback(f"Correo detectado: '{subject}' de {from_email}", "INFO")
+
+                    # Enviar notificación a cada usuario
+                    for notify_email in notify_emails:
+                        notification_subject = "Correo Detectado - BotLibertyBD"
+                        notification_body = f"""Se ha detectado un nuevo correo que coincide con sus criterios de búsqueda.
+
+Asunto del correo: {subject}
+Remitente: {from_email}
+Fecha de detección: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+El correo ha sido marcado como leído automáticamente.
+
+---
+Este es un mensaje automático de BotLibertyBD."""
+
+                        success, message = self.send_simple_email(
+                            notify_email,
+                            notification_subject,
+                            notification_body
+                        )
+
+                        if success:
+                            results["notified_users"] += 1
+                            if status_callback:
+                                status_callback(f"Notificación enviada a {notify_email}", "SUCCESS")
+                        else:
+                            error_msg = f"Error al notificar a {notify_email}: {message}"
+                            results["errors"].append(error_msg)
+                            if status_callback:
+                                status_callback(error_msg, "ERROR")
+
+            results["success"] = True
+            results["message"] = f"{results['matching_items']} correo(s) detectado(s), {results['notified_users']} notificación(es) enviada(s)"
+            return results
+
+        except Exception as e:
+            error_msg = f"Error en monitoreo: {str(e)}"
+            results["errors"].append(error_msg)
+            results["message"] = error_msg
+            if status_callback:
+                status_callback(error_msg, "ERROR")
+            logger.error(error_msg)
+            return results
