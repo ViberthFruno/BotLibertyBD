@@ -14,12 +14,13 @@ class EmailConnector:
 
     def __init__(self, smtp_server, smtp_port, imap_server, imap_port,
                  email_address, password, use_tls=True):
-        self.smtp_server = smtp_server
+        # Limpiar espacios no separables y espacios en blanco
+        self.smtp_server = str(smtp_server).replace('\xa0', ' ').strip()
         self.smtp_port = int(smtp_port)
-        self.imap_server = imap_server
+        self.imap_server = str(imap_server).replace('\xa0', ' ').strip()
         self.imap_port = int(imap_port)
-        self.email_address = email_address
-        self.password = password
+        self.email_address = str(email_address).replace('\xa0', ' ').strip()
+        self.password = str(password).replace('\xa0', ' ').strip()
         self.use_tls = use_tls
 
     def is_available(self):

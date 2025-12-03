@@ -174,31 +174,55 @@ class CorreoDialog(tk.Toplevel):
         # Mostrar u ocultar campos avanzados
         self._toggle_advanced_settings()
 
+    def _clean_input(self, value):
+        """Limpia espacios no separables y otros caracteres problemáticos."""
+        if not value:
+            return ""
+        # Reemplazar espacios no separables (\xa0) con espacios normales
+        cleaned = value.replace('\xa0', ' ').replace('\u00a0', ' ')
+        # Eliminar espacios al inicio y final
+        return cleaned.strip()
+
     def _gather_config(self):
         return {
-            "email": self.email_entry.get().strip(),
-            "password": self.pass_entry.get(),
-            "smtp_server": self.smtp_entry.get().strip(),
-            "smtp_port": int(self.smtp_port_entry.get().strip() or 0),
-            "imap_server": self.imap_entry.get().strip(),
-            "imap_port": int(self.imap_port_entry.get().strip() or 0),
+            "email": self._clean_input(self.email_entry.get()),
+            "password": self._clean_input(self.pass_entry.get()),
+            "smtp_server": self._clean_input(self.smtp_entry.get()),
+            "smtp_port": int(self._clean_input(self.smtp_port_entry.get()) or 0),
+            "imap_server": self._clean_input(self.imap_entry.get()),
+            "imap_port": int(self._clean_input(self.imap_port_entry.get()) or 0),
         }
 
     def test_connection(self):
         config = self._gather_config()
-        connector = EmailConnector(
-            smtp_server=config["smtp_server"],
-            smtp_port=config["smtp_port"],
-            imap_server=config["imap_server"],
-            imap_port=config["imap_port"],
-            email_address=config["email"],
-            password=config["password"],
-        )
-        success, message = connector.test_connection()
-        if success:
-            messagebox.showinfo("Éxito", message)
-        else:
-            messagebox.showerror("Error", message)
+
+        # Validar campos requeridos
+        if not config["email"]:
+            messagebox.showerror("Error", "Por favor ingresa un correo electrónico")
+            return
+        if not config["password"]:
+            messagebox.showerror("Error", "Por favor ingresa una contraseña")
+            return
+        if not config["smtp_server"]:
+            messagebox.showerror("Error", "Por favor selecciona un proveedor o ingresa un servidor SMTP")
+            return
+
+        try:
+            connector = EmailConnector(
+                smtp_server=config["smtp_server"],
+                smtp_port=config["smtp_port"],
+                imap_server=config["imap_server"],
+                imap_port=config["imap_port"],
+                email_address=config["email"],
+                password=config["password"],
+            )
+            success, message = connector.test_connection()
+            if success:
+                messagebox.showinfo("Éxito", message)
+            else:
+                messagebox.showerror("Error", message)
+        except Exception as e:
+            messagebox.showerror("Error", f"Error al probar conexión: {str(e)}")
 
     def save(self):
         self.result = self._gather_config()
