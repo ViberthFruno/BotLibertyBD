@@ -1,3 +1,5 @@
+# email_connector.py
+
 import os
 import re
 import smtplib
