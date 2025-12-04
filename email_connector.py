@@ -101,8 +101,21 @@ class EmailConnector:
 
     def search_emails_and_download_excel(self, folder_path, title_filter,
                                          today_only=True, status_callback=None,
-                                         result_callback=None):
-        """Busca correos por título y descarga adjuntos de Excel."""
+                                         result_callback=None, max_emails_to_check=50,
+                                         max_matches=10):
+        """
+        Busca correos por título y descarga adjuntos de Excel.
+        OPTIMIZADO: Procesa correos uno a uno con límites para evitar consumo excesivo.
+
+        Args:
+            folder_path: Carpeta de correo a buscar
+            title_filter: Filtro de título para buscar correos
+            today_only: Si True, solo busca correos de hoy (default: True)
+            status_callback: Callback para reportar estado
+            result_callback: Callback para reportar resultados
+            max_emails_to_check: Máximo de correos a revisar (default: 50)
+            max_matches: Máximo de coincidencias a procesar (default: 10)
+        """
         results = {
             "success": False,
             "total_items": 0,
@@ -134,24 +147,61 @@ class EmailConnector:
                 results["message"] = "Error en búsqueda IMAP"
                 return results
 
-            for num in data[0].split():
+            email_ids = data[0].split()
+            total_emails = len(email_ids)
+
+            if not email_ids:
+                results["success"] = True
+                results["message"] = "No se encontraron correos"
+                return results
+
+            # OPTIMIZACIÓN: Limitar cantidad de correos a revisar
+            emails_to_process = email_ids[:max_emails_to_check]
+
+            if status_callback:
+                if total_emails > max_emails_to_check:
+                    status_callback(f"Encontrados {total_emails} correos. Procesando los primeros {max_emails_to_check}...", "INFO")
+                else:
+                    status_callback(f"Encontrados {total_emails} correos. Procesando...", "INFO")
+
+            # Procesar cada correo UNO A UNO
+            emails_checked = 0
+            for num in emails_to_process:
+                emails_checked += 1
+
+                # OPTIMIZACIÓN: Detener si ya encontramos suficientes coincidencias
+                if results["matching_items"] >= max_matches:
+                    if status_callback:
+                        status_callback(f"Límite de {max_matches} coincidencias alcanzado. Deteniendo búsqueda.", "INFO")
+                    break
+
                 # Leer solo el encabezado para obtener el asunto sin marcar como leído
                 typ, header_data = imap.fetch(num, '(BODY.PEEK[HEADER.FIELDS (SUBJECT)])')
                 if typ != 'OK':
                     continue
-                results["total_items"] += 1
+
                 header_msg = email.message_from_bytes(header_data[0][1])
                 subject = header_msg.get('Subject', '')
+
+                # Verificar si el asunto coincide con el filtro
                 if not self._subject_matches(subject, prepared_filters):
+                    # No coincide, continuar con el siguiente
+                    if status_callback and emails_checked % 10 == 0:
+                        status_callback(f"Revisados {emails_checked} correos...", "INFO")
                     continue
 
-                # Descargar el mensaje completo sin marcar como leído
+                # COINCIDENCIA ENCONTRADA - Descargar el mensaje completo
                 typ, msg_data = imap.fetch(num, '(BODY.PEEK[])')
                 if typ != 'OK':
                     continue
+
                 msg = email.message_from_bytes(msg_data[0][1])
                 results["matching_items"] += 1
 
+                if status_callback:
+                    status_callback(f"✓ Coincidencia #{results['matching_items']}: '{subject}'", "SUCCESS")
+
+                # Buscar adjuntos Excel
                 for part in msg.walk():
                     if part.get_content_disposition() == 'attachment':
                         filename = part.get_filename()
@@ -165,6 +215,8 @@ class EmailConnector:
 
                 # Marcar como leído después de procesar
                 imap.store(num, '+FLAGS', '\\Seen')
+
+            results["total_items"] = emails_checked
         except socket.timeout:
             results["errors"].append("Timeout de conexión IMAP")
             if status_callback:
@@ -220,11 +272,19 @@ class EmailConnector:
             return False, str(e)
 
     def monitor_and_notify(self, title_filter, notify_emails, folder_path="INBOX",
-                          status_callback=None):
+                          status_callback=None, max_emails_to_check=50, max_matches=5):
         """
         Monitorea correos no leídos con un título específico, los marca como leídos
         y envía notificaciones a los usuarios especificados.
-        OPTIMIZADO: Usa timeouts y mejor manejo de errores.
+        OPTIMIZADO: Procesa correos uno a uno con límites para evitar consumo excesivo.
+
+        Args:
+            title_filter: Filtro de título para buscar correos
+            notify_emails: Lista de emails a notificar
+            folder_path: Carpeta de correo a monitorear (default: INBOX)
+            status_callback: Callback para reportar estado
+            max_emails_to_check: Máximo de correos a revisar por ciclo (default: 50)
+            max_matches: Máximo de coincidencias a procesar por ciclo (default: 5)
         """
         results = {
             "success": False,
@@ -254,16 +314,34 @@ class EmailConnector:
                 return results
 
             email_ids = data[0].split()
-            results["total_items"] = len(email_ids)
+            total_unread = len(email_ids)
 
             if not email_ids:
                 results["success"] = True
                 results["message"] = "No hay correos nuevos"
                 return results
 
-            # Procesar cada correo
-            for num in email_ids:
-                # Leer encabezado para obtener asunto
+            # OPTIMIZACIÓN: Limitar cantidad de correos a revisar
+            emails_to_process = email_ids[:max_emails_to_check]
+
+            if status_callback:
+                if total_unread > max_emails_to_check:
+                    status_callback(f"Encontrados {total_unread} correos no leídos. Procesando los primeros {max_emails_to_check}...", "INFO")
+                else:
+                    status_callback(f"Encontrados {total_unread} correos no leídos. Procesando...", "INFO")
+
+            # Procesar cada correo UNO A UNO
+            emails_checked = 0
+            for num in emails_to_process:
+                emails_checked += 1
+
+                # OPTIMIZACIÓN: Detener si ya encontramos suficientes coincidencias
+                if results["matching_items"] >= max_matches:
+                    if status_callback:
+                        status_callback(f"Límite de {max_matches} coincidencias alcanzado. Deteniendo búsqueda.", "INFO")
+                    break
+
+                # Leer encabezado para obtener asunto (uno a uno)
                 typ, header_data = imap.fetch(num, '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM)])')
                 if typ != 'OK':
                     continue
@@ -274,15 +352,19 @@ class EmailConnector:
 
                 # Verificar si el asunto coincide con el filtro
                 if not self._subject_matches(subject, prepared_filters):
+                    # No coincide, continuar con el siguiente
+                    if status_callback and emails_checked % 10 == 0:
+                        status_callback(f"Revisados {emails_checked} correos...", "INFO")
                     continue
 
+                # COINCIDENCIA ENCONTRADA
                 results["matching_items"] += 1
 
                 # Marcar como leído
                 imap.store(num, '+FLAGS', '\\Seen')
 
                 if status_callback:
-                    status_callback(f"Correo detectado: '{subject}' de {from_email}", "INFO")
+                    status_callback(f"✓ Coincidencia #{results['matching_items']}: '{subject}' de {from_email}", "SUCCESS")
 
                 # Enviar notificación a cada usuario
                 for notify_email in notify_emails:
@@ -315,6 +397,7 @@ Este es un mensaje automático de BotLibertyBD."""
                             status_callback(error_msg, "ERROR")
 
             results["success"] = True
+            results["total_items"] = emails_checked
             results["message"] = f"{results['matching_items']} correo(s) detectado(s), {results['notified_users']} notificación(es) enviada(s)"
 
         except socket.timeout:
