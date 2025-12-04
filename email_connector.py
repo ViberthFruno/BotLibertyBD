@@ -336,28 +336,34 @@ class EmailConnector:
             return False, str(e)
 
     @staticmethod
-    def extract_excel_data(excel_path, row=1, col_g='G', col_h='H'):
+    def extract_excel_data(excel_path, col_g='G', col_h='H', skip_header=True):
         """
-        Extrae datos de un archivo Excel en posiciones específicas.
+        Extrae TODOS los datos de las columnas especificadas del archivo Excel.
 
         Args:
             excel_path: Ruta del archivo Excel
-            row: Número de fila (default: 1)
             col_g: Columna para el primer dato (default: 'G')
             col_h: Columna para el segundo dato (default: 'H')
+            skip_header: Si True, omite la fila 1 (encabezados) (default: True)
 
         Returns:
             dict: {
                 'success': bool,
-                'data_g': valor de columna G,
-                'data_h': valor de columna H,
+                'data_g': lista de valores de columna G,
+                'data_h': lista de valores de columna H,
+                'header_g': título de columna G (fila 1),
+                'header_h': título de columna H (fila 1),
+                'row_count': número de filas de datos extraídas,
                 'error': mensaje de error (si aplica)
             }
         """
         result = {
             'success': False,
-            'data_g': None,
-            'data_h': None,
+            'data_g': [],
+            'data_h': [],
+            'header_g': None,
+            'header_h': None,
+            'row_count': 0,
             'error': None
         }
 
@@ -374,20 +380,30 @@ class EmailConnector:
             workbook = openpyxl.load_workbook(excel_path, data_only=True)
             sheet = workbook.active
 
-            # Extraer datos de las columnas G y H en la fila especificada
-            cell_g = f"{col_g}{row}"
-            cell_h = f"{col_h}{row}"
+            # Obtener el número total de filas con datos
+            max_row = sheet.max_row
 
-            value_g = sheet[cell_g].value
-            value_h = sheet[cell_h].value
+            # Extraer encabezados de la fila 1
+            result['header_g'] = sheet[f"{col_g}1"].value
+            result['header_h'] = sheet[f"{col_h}1"].value
 
-            result['data_g'] = value_g
-            result['data_h'] = value_h
+            # Extraer todos los datos de las columnas G y H
+            start_row = 2 if skip_header else 1
+
+            for row in range(start_row, max_row + 1):
+                value_g = sheet[f"{col_g}{row}"].value
+                value_h = sheet[f"{col_h}{row}"].value
+
+                # Solo agregar si al menos uno de los valores no es None/vacío
+                if value_g is not None or value_h is not None:
+                    result['data_g'].append(value_g)
+                    result['data_h'].append(value_h)
+                    result['row_count'] += 1
+
             result['success'] = True
-
             workbook.close()
 
-            logger.info(f"Datos extraídos del Excel: G{row}={value_g}, H{row}={value_h}")
+            logger.info(f"Datos extraídos del Excel: {result['row_count']} filas de columnas {col_g} y {col_h}")
 
         except ImportError:
             result['error'] = "La librería 'openpyxl' no está instalada. Ejecute: pip install openpyxl"
@@ -399,13 +415,15 @@ class EmailConnector:
         return result
 
     @staticmethod
-    def create_text_file_with_data(data_g, data_h, excel_filename, output_dir=None):
+    def create_text_file_with_data(data_g, data_h, header_g, header_h, excel_filename, output_dir=None):
         """
         Crea un archivo de texto con los datos extraídos del Excel.
 
         Args:
-            data_g: Dato de la columna G
-            data_h: Dato de la columna H
+            data_g: Lista de datos de la columna G
+            data_h: Lista de datos de la columna H
+            header_g: Encabezado de la columna G
+            header_h: Encabezado de la columna H
             excel_filename: Nombre del archivo Excel procesado
             output_dir: Directorio donde guardar el archivo (default: temp)
 
@@ -422,24 +440,42 @@ class EmailConnector:
             filename = f"datos_extraidos_{timestamp}.txt"
             filepath = os.path.join(output_dir, filename)
 
-            # Crear contenido del archivo
+            # Crear encabezado del archivo
             content = f"""=== DATOS EXTRAÍDOS DEL EXCEL ===
 Fecha de extracción: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
-Columna G (Fila 1): {data_g if data_g is not None else 'Sin datos'}
-Columna H (Fila 1): {data_h if data_h is not None else 'Sin datos'}
-
 Archivo procesado: {excel_filename}
 
----
-Generado automáticamente por BotLibertyBD
+Total de registros: {len(data_g)}
+
 """
+
+            # Agregar encabezados
+            header_line = f"{header_g or 'Columna G':<40} | {header_h or 'Columna H'}"
+            content += header_line + "\n"
+            content += "=" * len(header_line) + "\n\n"
+
+            # Agregar datos fila por fila
+            if data_g or data_h:
+                max_rows = max(len(data_g), len(data_h))
+                for i in range(max_rows):
+                    val_g = data_g[i] if i < len(data_g) else ''
+                    val_h = data_h[i] if i < len(data_h) else ''
+
+                    # Convertir a string y manejar valores None
+                    val_g_str = str(val_g) if val_g is not None else ''
+                    val_h_str = str(val_h) if val_h is not None else ''
+
+                    content += f"{val_g_str:<40} | {val_h_str}\n"
+            else:
+                content += "Sin datos\n"
+
+            content += "\n---\nGenerado automáticamente por BotLibertyBD\n"
 
             # Escribir archivo
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(content)
 
-            logger.info(f"Archivo de texto creado: {filepath}")
+            logger.info(f"Archivo de texto creado: {filepath} ({len(data_g)} registros)")
             return True, filepath, None
 
         except Exception as e:
@@ -574,23 +610,26 @@ Generado automáticamente por BotLibertyBD
                         if status_callback:
                             status_callback(f"📊 Extrayendo datos del Excel...", "INFO")
 
-                        # Extraer datos de columnas G y H
+                        # Extraer todos los datos de columnas G y H
                         extraction_result = self.extract_excel_data(excel_path)
 
                         if extraction_result['success']:
                             data_g = extraction_result['data_g']
                             data_h = extraction_result['data_h']
+                            header_g = extraction_result['header_g']
+                            header_h = extraction_result['header_h']
+                            row_count = extraction_result['row_count']
 
                             if status_callback:
-                                status_callback(f"✓ Datos extraídos - G1: {data_g}, H1: {data_h}", "SUCCESS")
+                                status_callback(f"✓ Datos extraídos - {row_count} registros de columnas G y H", "SUCCESS")
 
                             # Crear archivo de texto con los datos
                             success, text_file_path, error_msg = self.create_text_file_with_data(
-                                data_g, data_h, excel_filename, temp_dir
+                                data_g, data_h, header_g, header_h, excel_filename, temp_dir
                             )
 
                             if success and status_callback:
-                                status_callback(f"✓ Archivo de texto creado", "SUCCESS")
+                                status_callback(f"✓ Archivo de texto creado con {row_count} registros", "SUCCESS")
                         else:
                             if status_callback:
                                 status_callback(f"⚠ Error al extraer datos: {extraction_result['error']}", "WARNING")
@@ -600,23 +639,26 @@ Generado automáticamente por BotLibertyBD
 
                     # Enviar notificación a cada usuario
                     for notify_email in notify_emails:
-                        notification_subject = "Correo Detectado - BotLibertyBD"
+                        notification_subject = "Datos Extraídos - BotLibertyBD"
 
-                        # Preparar cuerpo del mensaje
-                        notification_body = f"""Se ha detectado un nuevo correo que coincide con sus criterios de búsqueda.
+                        # Preparar cuerpo del mensaje simplificado
+                        if excel_files and text_file_path:
+                            notification_body = f"""📎 Archivo Excel procesado: {os.path.basename(excel_files[0])}
+📄 Los datos extraídos de las columnas G y H se adjuntan en este correo.
 
-Asunto del correo: {subject}
-Remitente: {from_email}
-Fecha de detección: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+---
+Este es un mensaje automático de BotLibertyBD."""
+                        elif excel_files:
+                            notification_body = f"""📎 Se encontró un archivo Excel adjunto: {os.path.basename(excel_files[0])}
+⚠ No se pudieron extraer datos del archivo.
 
-El correo ha sido marcado como leído automáticamente."""
+---
+Este es un mensaje automático de BotLibertyBD."""
+                        else:
+                            notification_body = """⚠ No se encontró archivo Excel adjunto en el correo detectado.
 
-                        if excel_files:
-                            notification_body += f"\n\n📎 Se encontró un archivo Excel adjunto: {os.path.basename(excel_files[0])}"
-                            if text_file_path:
-                                notification_body += f"\n📄 Los datos extraídos (columnas G y H) se adjuntan en este correo."
-
-                        notification_body += "\n\n---\nEste es un mensaje automático de BotLibertyBD."
+---
+Este es un mensaje automático de BotLibertyBD."""
 
                         # Enviar correo con o sin adjunto
                         if text_file_path and os.path.exists(text_file_path):
