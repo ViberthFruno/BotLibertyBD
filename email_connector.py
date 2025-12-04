@@ -10,6 +10,8 @@ import unicodedata
 import socket
 from datetime import datetime
 from logger import logger
+from email.mime.base import MIMEBase
+from email import encoders
 
 
 class EmailConnector:
@@ -273,6 +275,178 @@ class EmailConnector:
             logger.error(f"Error al enviar correo a {to_email}: {e}")
             return False, str(e)
 
+    def send_email_with_attachment(self, to_email, subject, body, attachment_path):
+        """
+        Envía un correo con un archivo adjunto.
+
+        Args:
+            to_email: Destinatario del correo
+            subject: Asunto del correo
+            body: Cuerpo del mensaje
+            attachment_path: Ruta completa del archivo a adjuntar
+
+        Returns:
+            tuple: (success, message)
+        """
+        try:
+            from email.mime.text import MIMEText
+            from email.mime.multipart import MIMEMultipart
+
+            msg = MIMEMultipart()
+            msg['From'] = self.email_address
+            msg['To'] = to_email
+            msg['Subject'] = subject
+
+            # Adjuntar cuerpo del mensaje
+            msg.attach(MIMEText(body, 'plain'))
+
+            # Adjuntar archivo
+            if attachment_path and os.path.exists(attachment_path):
+                filename = os.path.basename(attachment_path)
+
+                with open(attachment_path, 'rb') as attachment:
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(attachment.read())
+
+                encoders.encode_base64(part)
+                part.add_header(
+                    'Content-Disposition',
+                    f'attachment; filename= {filename}'
+                )
+                msg.attach(part)
+
+                logger.info(f"Archivo adjunto agregado: {filename}")
+
+            # Enviar correo
+            with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=10) as server:
+                if self.use_tls:
+                    server.starttls()
+                server.login(self.email_address, self.password)
+                server.send_message(msg)
+
+            logger.info(f"Correo con adjunto enviado a {to_email}")
+            return True, "Correo con adjunto enviado exitosamente"
+
+        except socket.timeout:
+            error_msg = f"Timeout al enviar correo a {to_email}"
+            logger.error(error_msg)
+            return False, error_msg
+        except Exception as e:
+            logger.error(f"Error al enviar correo con adjunto a {to_email}: {e}")
+            return False, str(e)
+
+    @staticmethod
+    def extract_excel_data(excel_path, row=1, col_g='G', col_h='H'):
+        """
+        Extrae datos de un archivo Excel en posiciones específicas.
+
+        Args:
+            excel_path: Ruta del archivo Excel
+            row: Número de fila (default: 1)
+            col_g: Columna para el primer dato (default: 'G')
+            col_h: Columna para el segundo dato (default: 'H')
+
+        Returns:
+            dict: {
+                'success': bool,
+                'data_g': valor de columna G,
+                'data_h': valor de columna H,
+                'error': mensaje de error (si aplica)
+            }
+        """
+        result = {
+            'success': False,
+            'data_g': None,
+            'data_h': None,
+            'error': None
+        }
+
+        try:
+            import openpyxl
+
+            # Verificar que el archivo existe
+            if not os.path.exists(excel_path):
+                result['error'] = f"Archivo no encontrado: {excel_path}"
+                logger.error(result['error'])
+                return result
+
+            # Abrir el archivo Excel
+            workbook = openpyxl.load_workbook(excel_path, data_only=True)
+            sheet = workbook.active
+
+            # Extraer datos de las columnas G y H en la fila especificada
+            cell_g = f"{col_g}{row}"
+            cell_h = f"{col_h}{row}"
+
+            value_g = sheet[cell_g].value
+            value_h = sheet[cell_h].value
+
+            result['data_g'] = value_g
+            result['data_h'] = value_h
+            result['success'] = True
+
+            workbook.close()
+
+            logger.info(f"Datos extraídos del Excel: G{row}={value_g}, H{row}={value_h}")
+
+        except ImportError:
+            result['error'] = "La librería 'openpyxl' no está instalada. Ejecute: pip install openpyxl"
+            logger.error(result['error'])
+        except Exception as e:
+            result['error'] = f"Error al extraer datos del Excel: {str(e)}"
+            logger.error(result['error'])
+
+        return result
+
+    @staticmethod
+    def create_text_file_with_data(data_g, data_h, excel_filename, output_dir=None):
+        """
+        Crea un archivo de texto con los datos extraídos del Excel.
+
+        Args:
+            data_g: Dato de la columna G
+            data_h: Dato de la columna H
+            excel_filename: Nombre del archivo Excel procesado
+            output_dir: Directorio donde guardar el archivo (default: temp)
+
+        Returns:
+            tuple: (success, file_path, error_message)
+        """
+        try:
+            # Definir directorio de salida
+            if output_dir is None:
+                output_dir = tempfile.gettempdir()
+
+            # Crear nombre de archivo con timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"datos_extraidos_{timestamp}.txt"
+            filepath = os.path.join(output_dir, filename)
+
+            # Crear contenido del archivo
+            content = f"""=== DATOS EXTRAÍDOS DEL EXCEL ===
+Fecha de extracción: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+Columna G (Fila 1): {data_g if data_g is not None else 'Sin datos'}
+Columna H (Fila 1): {data_h if data_h is not None else 'Sin datos'}
+
+Archivo procesado: {excel_filename}
+
+---
+Generado automáticamente por BotLibertyBD
+"""
+
+            # Escribir archivo
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            logger.info(f"Archivo de texto creado: {filepath}")
+            return True, filepath, None
+
+        except Exception as e:
+            error_msg = f"Error al crear archivo de texto: {str(e)}"
+            logger.error(error_msg)
+            return False, None, error_msg
+
     def monitor_and_notify(self, title_filter, notify_emails, folder_path="INBOX",
                           status_callback=None, max_emails_to_check=50, max_matches=5):
         """
@@ -362,41 +536,123 @@ class EmailConnector:
                 # COINCIDENCIA ENCONTRADA
                 results["matching_items"] += 1
 
-                # Marcar como leído
-                imap.store(num, '+FLAGS', '\\Seen')
-
                 if status_callback:
                     status_callback(f"✓ Coincidencia #{results['matching_items']}: '{subject}' de {from_email}", "SUCCESS")
 
-                # Enviar notificación a cada usuario
-                for notify_email in notify_emails:
-                    notification_subject = "Correo Detectado - BotLibertyBD"
-                    notification_body = f"""Se ha detectado un nuevo correo que coincide con sus criterios de búsqueda.
+                # Descargar el mensaje completo para obtener adjuntos
+                typ, full_msg_data = imap.fetch(num, '(RFC822)')
+                if typ != 'OK':
+                    if status_callback:
+                        status_callback("Error al descargar mensaje completo", "WARNING")
+                    continue
+
+                full_msg = email.message_from_bytes(full_msg_data[0][1])
+
+                # Variables para almacenar archivos temporales
+                excel_files = []
+                text_file_path = None
+                temp_dir = tempfile.mkdtemp(prefix="bot_liberty_")
+
+                try:
+                    # Buscar y descargar adjuntos Excel
+                    for part in full_msg.walk():
+                        if part.get_content_disposition() == 'attachment':
+                            filename = part.get_filename()
+                            if filename and filename.lower().endswith(('.xls', '.xlsx')):
+                                filepath = os.path.join(temp_dir, filename)
+                                with open(filepath, 'wb') as f:
+                                    f.write(part.get_payload(decode=True))
+                                excel_files.append(filepath)
+                                if status_callback:
+                                    status_callback(f"📎 Excel descargado: {filename}", "INFO")
+
+                    # Procesar el primer archivo Excel encontrado
+                    if excel_files:
+                        excel_path = excel_files[0]
+                        excel_filename = os.path.basename(excel_path)
+
+                        if status_callback:
+                            status_callback(f"📊 Extrayendo datos del Excel...", "INFO")
+
+                        # Extraer datos de columnas G y H
+                        extraction_result = self.extract_excel_data(excel_path)
+
+                        if extraction_result['success']:
+                            data_g = extraction_result['data_g']
+                            data_h = extraction_result['data_h']
+
+                            if status_callback:
+                                status_callback(f"✓ Datos extraídos - G1: {data_g}, H1: {data_h}", "SUCCESS")
+
+                            # Crear archivo de texto con los datos
+                            success, text_file_path, error_msg = self.create_text_file_with_data(
+                                data_g, data_h, excel_filename, temp_dir
+                            )
+
+                            if success and status_callback:
+                                status_callback(f"✓ Archivo de texto creado", "SUCCESS")
+                        else:
+                            if status_callback:
+                                status_callback(f"⚠ Error al extraer datos: {extraction_result['error']}", "WARNING")
+
+                    # Marcar como leído después de procesar
+                    imap.store(num, '+FLAGS', '\\Seen')
+
+                    # Enviar notificación a cada usuario
+                    for notify_email in notify_emails:
+                        notification_subject = "Correo Detectado - BotLibertyBD"
+
+                        # Preparar cuerpo del mensaje
+                        notification_body = f"""Se ha detectado un nuevo correo que coincide con sus criterios de búsqueda.
 
 Asunto del correo: {subject}
 Remitente: {from_email}
 Fecha de detección: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
-El correo ha sido marcado como leído automáticamente.
+El correo ha sido marcado como leído automáticamente."""
 
----
-Este es un mensaje automático de BotLibertyBD."""
+                        if excel_files:
+                            notification_body += f"\n\n📎 Se encontró un archivo Excel adjunto: {os.path.basename(excel_files[0])}"
+                            if text_file_path:
+                                notification_body += f"\n📄 Los datos extraídos (columnas G y H) se adjuntan en este correo."
 
-                    success, message = self.send_simple_email(
-                        notify_email,
-                        notification_subject,
-                        notification_body
-                    )
+                        notification_body += "\n\n---\nEste es un mensaje automático de BotLibertyBD."
 
-                    if success:
-                        results["notified_users"] += 1
-                        if status_callback:
-                            status_callback(f"Notificación enviada a {notify_email}", "SUCCESS")
-                    else:
-                        error_msg = f"Error al notificar a {notify_email}: {message}"
-                        results["errors"].append(error_msg)
-                        if status_callback:
-                            status_callback(error_msg, "ERROR")
+                        # Enviar correo con o sin adjunto
+                        if text_file_path and os.path.exists(text_file_path):
+                            success, message = self.send_email_with_attachment(
+                                notify_email,
+                                notification_subject,
+                                notification_body,
+                                text_file_path
+                            )
+                        else:
+                            success, message = self.send_simple_email(
+                                notify_email,
+                                notification_subject,
+                                notification_body
+                            )
+
+                        if success:
+                            results["notified_users"] += 1
+                            if status_callback:
+                                status_callback(f"✉ Notificación enviada a {notify_email}", "SUCCESS")
+                        else:
+                            error_msg = f"Error al notificar a {notify_email}: {message}"
+                            results["errors"].append(error_msg)
+                            if status_callback:
+                                status_callback(error_msg, "ERROR")
+
+                finally:
+                    # Limpiar archivos temporales
+                    try:
+                        import shutil
+                        if os.path.exists(temp_dir):
+                            shutil.rmtree(temp_dir)
+                            if status_callback:
+                                status_callback(f"🗑 Archivos temporales eliminados", "INFO")
+                    except Exception as e:
+                        logger.warning(f"No se pudieron eliminar archivos temporales: {e}")
 
             results["success"] = True
             results["total_items"] = emails_checked

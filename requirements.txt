@@ -1,0 +1,20 @@
+# BotLibertyBD - Dependencias del Proyecto
+# Bot de automatización de correos con integración PostgreSQL
+
+# Base de datos
+psycopg2-binary>=2.9.0
+
+# Análisis de datos
+pandas>=1.5.0
+
+# Interfaz gráfica
+customtkinter>=5.0.0
+
+# Procesamiento de archivos Excel
+openpyxl>=3.1.0
+
+# Nota: Las siguientes librerías vienen incluidas con Python:
+# - smtplib (correo SMTP)
+# - imaplib (correo IMAP)
+# - email (procesamiento de mensajes)
+# - tkinter (interfaz gráfica base)
