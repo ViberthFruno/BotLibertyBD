@@ -59,11 +59,28 @@ class PrincipalTab:
         self.message_queue = queue.Queue()
         self.stop_monitoring_event = threading.Event()
 
+        # Configurar estilos para el botón de monitoreo
+        self._setup_button_styles()
+
         # Crear la estructura de la pestaña
         self._create_principal_tab()
 
         # Iniciar el procesador de mensajes de la cola
         self._process_queue()
+
+    def _setup_button_styles(self):
+        """Configura los estilos personalizados para el botón de monitoreo."""
+        style = ttk.Style()
+
+        # Estilo para el botón cuando está detenido (verde)
+        style.configure('StartMonitoring.TButton',
+                       font=('Arial', 14, 'bold'),
+                       padding=(30, 15))
+
+        # Estilo para el botón cuando está activo (rojo)
+        style.configure('StopMonitoring.TButton',
+                       font=('Arial', 14, 'bold'),
+                       padding=(30, 15))
 
     def _create_principal_tab(self):
         """Crea los widgets de la pestaña principal."""
@@ -79,19 +96,11 @@ class PrincipalTab:
         panel_title = ttk.Label(panel_frame, text="Control de Monitoreo", font=("Arial", 14, "bold"))
         panel_title.pack(pady=(0, 15))
 
-        # Botón grande de monitoreo
-        self.monitoring_button = tk.Button(
+        # Botón grande de monitoreo (usando ttk.Button para consistencia)
+        self.monitoring_button = ttk.Button(
             panel_frame,
             text="▶ Iniciar Monitoreo",
-            font=("Arial", 14, "bold"),
-            bg="#4CAF50",
-            fg="white",
-            activebackground="#45a049",
-            activeforeground="white",
-            relief=tk.RAISED,
-            bd=3,
-            padx=30,
-            pady=15,
+            style='StartMonitoring.TButton',
             cursor="hand2",
             command=self._toggle_monitoring
         )
@@ -380,7 +389,7 @@ class PrincipalTab:
 
             self.monitoring_button.configure(
                 text="⏸ Detener Monitoreo",
-                bg="#f44336"
+                style='StopMonitoring.TButton'
             )
             self.monitoring_status_label.configure(
                 text="Estado: Activo",
@@ -405,7 +414,7 @@ class PrincipalTab:
 
             self.monitoring_button.configure(
                 text="▶ Iniciar Monitoreo",
-                bg="#4CAF50"
+                style='StartMonitoring.TButton'
             )
             self.monitoring_status_label.configure(
                 text="Estado: Detenido",
@@ -462,8 +471,8 @@ class PrincipalTab:
         )
         self.monitoring_thread.start()
 
-        # Programar el próximo ciclo (cada 5 minutos = 300000 ms)
-        self.monitoring_job = self.parent.after(300000, self._start_monitoring_cycle)
+        # Programar el próximo ciclo (cada 30 segundos = 30000 ms)
+        self.monitoring_job = self.parent.after(30000, self._start_monitoring_cycle)
 
     def _execute_monitoring_thread(self):
         """

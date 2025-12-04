@@ -48,15 +48,24 @@ def setup_logger():
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    # Configurar console handler con UTF-8 para soportar caracteres especiales
     console = logging.StreamHandler()
     console.setFormatter(formatter)
+    # Configurar el stream para usar UTF-8
+    if hasattr(console.stream, 'reconfigure'):
+        try:
+            console.stream.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
     logger.addHandler(console)
     log_dir = get_safe_log_directory()
     if log_dir:
         try:
+            # Configurar file handler con UTF-8 para soportar caracteres especiales
             handler = RotatingFileHandler(
                 os.path.join(log_dir, f"enlacedb_{datetime.datetime.now():%Y%m%d}.log"),
-                maxBytes=10485760, backupCount=5)
+                maxBytes=10485760, backupCount=5, encoding='utf-8')
             handler.setFormatter(formatter)
             logger.addHandler(handler)
             logger.info(f"Sistema de logging iniciado. Directorio de logs: {log_dir}")
