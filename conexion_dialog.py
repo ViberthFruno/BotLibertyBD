@@ -5,10 +5,13 @@ Diálogo de configuración PostgreSQL para EnlaceDB.
 Proporciona una interfaz modal simplificada para configurar la conexión a PostgreSQL,
 incluyendo parámetros de conexión, pruebas de conectividad y verificación de estructura.
 Los valores de configuración se obtienen únicamente del archivo JSON, sin datos hardcodeados.
+
+OPTIMIZADO: Usa threading para pruebas de conexión sin bloquear la UI.
 """
 
 import tkinter as tk
 from tkinter import ttk, messagebox
+import threading
 from postgres_connector import PostgresConnector
 from logger import logger
 
@@ -198,20 +201,52 @@ class ConexionDialog(tk.Toplevel):
         return params
 
     def test_connection(self):
-        """Prueba la conexión a PostgreSQL."""
+        """Prueba la conexión a PostgreSQL en un hilo separado para no bloquear la UI."""
         params = self._get_connection_params()
         if not params:
             self.status_label.configure(text="Estado: ✗ Campos incompletos", foreground="red")
             return
 
         self.status_label.configure(text="Estado: Probando conexión...", foreground="black")
-        self.update()
 
-        # Crear y probar conector
-        self.postgres_connector = PostgresConnector(**params)
-        success, message = self.postgres_connector.test_connection()
+        # Crear un diálogo de progreso
+        progress_dialog = tk.Toplevel(self)
+        progress_dialog.title("Probando Conexión")
+        progress_dialog.geometry("350x120")
+        progress_dialog.transient(self)
+        progress_dialog.grab_set()
+
+        ttk.Label(progress_dialog, text="Probando conexión a PostgreSQL...", font=("Arial", 10)).pack(pady=15)
+        ttk.Label(progress_dialog, text="Esto puede tardar hasta 10 segundos", font=("Arial", 8), foreground="gray").pack()
+        progress_bar = ttk.Progressbar(progress_dialog, mode='indeterminate')
+        progress_bar.pack(pady=10, padx=20, fill=tk.X)
+        progress_bar.start()
+
+        def run_test():
+            """Ejecuta el test de conexión en un hilo separado."""
+            try:
+                # Crear y probar conector
+                connector = PostgresConnector(**params)
+                success, message = connector.test_connection()
+
+                # Actualizar UI en el hilo principal
+                self.after(0, lambda: self._show_connection_result(success, message, connector, progress_dialog))
+            except Exception as e:
+                self.after(0, lambda: self._show_connection_result(False, str(e), None, progress_dialog))
+
+        # Iniciar el test en un hilo separado
+        test_thread = threading.Thread(target=run_test, daemon=True)
+        test_thread.start()
+
+    def _show_connection_result(self, success, message, connector, progress_dialog):
+        """Muestra el resultado del test de conexión en el hilo principal."""
+        try:
+            progress_dialog.destroy()
+        except:
+            pass
 
         if success:
+            self.postgres_connector = connector
             self.status_label.configure(text="Estado: ✓ Conexión exitosa", foreground="green")
             messagebox.showinfo("Conexión exitosa", f"Conexión establecida correctamente.\n\n{message}")
             logger.info(f"Conexión exitosa: {message}")
