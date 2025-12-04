@@ -101,6 +101,7 @@ class PostgresConnector:
             "dbname": self.database,
             "user": self.username,
             "password": self.password,
+            "connect_timeout": 10,  # Timeout de 10 segundos para evitar bloqueos
         }
 
         if extra_params:

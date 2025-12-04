@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
+import threading
 from email_connector import EmailConnector
 
 PROVIDERS = {
@@ -185,16 +186,50 @@ class CorreoDialog(tk.Toplevel):
         }
 
     def test_connection(self):
+        """Prueba la conexión de correo en un hilo separado para no bloquear la UI."""
         config = self._gather_config()
-        connector = EmailConnector(
-            smtp_server=config["smtp_server"],
-            smtp_port=config["smtp_port"],
-            imap_server=config["imap_server"],
-            imap_port=config["imap_port"],
-            email_address=config["email"],
-            password=config["password"],
-        )
-        success, message = connector.test_connection()
+
+        # Crear un diálogo de progreso
+        progress_dialog = tk.Toplevel(self)
+        progress_dialog.title("Probando Conexión")
+        progress_dialog.geometry("300x100")
+        progress_dialog.transient(self)
+        progress_dialog.grab_set()
+
+        ttk.Label(progress_dialog, text="Probando conexión SMTP...", font=("Arial", 10)).pack(pady=20)
+        progress_bar = ttk.Progressbar(progress_dialog, mode='indeterminate')
+        progress_bar.pack(pady=10, padx=20, fill=tk.X)
+        progress_bar.start()
+
+        def run_test():
+            """Ejecuta el test de conexión en un hilo separado."""
+            try:
+                connector = EmailConnector(
+                    smtp_server=config["smtp_server"],
+                    smtp_port=config["smtp_port"],
+                    imap_server=config["imap_server"],
+                    imap_port=config["imap_port"],
+                    email_address=config["email"],
+                    password=config["password"],
+                )
+                success, message = connector.test_connection()
+
+                # Actualizar UI en el hilo principal
+                self.after(0, lambda: self._show_test_result(success, message, progress_dialog))
+            except Exception as e:
+                self.after(0, lambda: self._show_test_result(False, str(e), progress_dialog))
+
+        # Iniciar el test en un hilo separado
+        test_thread = threading.Thread(target=run_test, daemon=True)
+        test_thread.start()
+
+    def _show_test_result(self, success, message, progress_dialog):
+        """Muestra el resultado del test de conexión en el hilo principal."""
+        try:
+            progress_dialog.destroy()
+        except:
+            pass
+
         if success:
             messagebox.showinfo("Éxito", message)
         else:

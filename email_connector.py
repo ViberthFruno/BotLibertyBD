@@ -5,6 +5,7 @@ import imaplib
 import email
 import tempfile
 import unicodedata
+import socket
 from datetime import datetime
 from logger import logger
 
@@ -21,6 +22,8 @@ class EmailConnector:
         self.email_address = email_address
         self.password = password
         self.use_tls = use_tls
+        # Configurar timeout por defecto para sockets
+        socket.setdefaulttimeout(30)
 
     def is_available(self):
         """Verifica si las dependencias básicas están disponibles."""
@@ -41,23 +44,31 @@ class EmailConnector:
     def load_folders(self, callback=None):
         """Obtiene la lista de carpetas disponibles mediante IMAP."""
         folders = []
+        imap = None
         try:
-            with imaplib.IMAP4_SSL(self.imap_server, self.imap_port) as imap:
-                imap.login(self.email_address, self.password)
-                typ, data = imap.list()
-                if typ == 'OK':
-                    for line in data:
-                        decoded = line.decode()
-                        parts = decoded.split(' "/" ')
-                        if len(parts) == 2:
-                            folder = parts[1].strip('"')
-                            folders.append(folder)
-                            if callback:
-                                callback(f"Bandeja encontrada: {folder}")
+            # Agregar timeout de 30 segundos para evitar bloqueos indefinidos
+            imap = imaplib.IMAP4_SSL(self.imap_server, self.imap_port, timeout=30)
+            imap.login(self.email_address, self.password)
+            typ, data = imap.list()
+            if typ == 'OK':
+                for line in data:
+                    decoded = line.decode()
+                    parts = decoded.split(' "/" ')
+                    if len(parts) == 2:
+                        folder = parts[1].strip('"')
+                        folders.append(folder)
+                        if callback:
+                            callback(f"Bandeja encontrada: {folder}")
         except Exception as e:
             if callback:
                 callback(f"Error al cargar carpetas: {e}", "ERROR")
             logger.error(f"Error al cargar carpetas IMAP: {e}")
+        finally:
+            if imap:
+                try:
+                    imap.logout()
+                except:
+                    pass
         return folders
 
     @staticmethod
@@ -108,55 +119,70 @@ class EmailConnector:
         temp_dir = tempfile.mkdtemp(prefix="enlace_db_excel_")
         results["temp_dir"] = temp_dir
 
+        imap = None
         try:
-            with imaplib.IMAP4_SSL(self.imap_server, self.imap_port) as imap:
-                imap.login(self.email_address, self.password)
-                imap.select(folder_path)
+            # Agregar timeout de 30 segundos
+            imap = imaplib.IMAP4_SSL(self.imap_server, self.imap_port, timeout=30)
+            imap.login(self.email_address, self.password)
+            imap.select(folder_path)
 
-                date_str = datetime.now().strftime('%d-%b-%Y')
-                search_criteria = ['ON', date_str] if today_only else ['ALL']
+            date_str = datetime.now().strftime('%d-%b-%Y')
+            search_criteria = ['ON', date_str] if today_only else ['ALL']
 
-                typ, data = imap.search(None, *search_criteria)
+            typ, data = imap.search(None, *search_criteria)
+            if typ != 'OK':
+                results["message"] = "Error en búsqueda IMAP"
+                return results
+
+            for num in data[0].split():
+                # Leer solo el encabezado para obtener el asunto sin marcar como leído
+                typ, header_data = imap.fetch(num, '(BODY.PEEK[HEADER.FIELDS (SUBJECT)])')
                 if typ != 'OK':
-                    results["message"] = "Error en búsqueda IMAP"
-                    return results
+                    continue
+                results["total_items"] += 1
+                header_msg = email.message_from_bytes(header_data[0][1])
+                subject = header_msg.get('Subject', '')
+                if not self._subject_matches(subject, prepared_filters):
+                    continue
 
-                for num in data[0].split():
-                    # Leer solo el encabezado para obtener el asunto sin marcar como leído
-                    typ, header_data = imap.fetch(num, '(BODY.PEEK[HEADER.FIELDS (SUBJECT)])')
-                    if typ != 'OK':
-                        continue
-                    results["total_items"] += 1
-                    header_msg = email.message_from_bytes(header_data[0][1])
-                    subject = header_msg.get('Subject', '')
-                    if not self._subject_matches(subject, prepared_filters):
-                        continue
+                # Descargar el mensaje completo sin marcar como leído
+                typ, msg_data = imap.fetch(num, '(BODY.PEEK[])')
+                if typ != 'OK':
+                    continue
+                msg = email.message_from_bytes(msg_data[0][1])
+                results["matching_items"] += 1
 
-                    # Descargar el mensaje completo sin marcar como leído
-                    typ, msg_data = imap.fetch(num, '(BODY.PEEK[])')
-                    if typ != 'OK':
-                        continue
-                    msg = email.message_from_bytes(msg_data[0][1])
-                    results["matching_items"] += 1
+                for part in msg.walk():
+                    if part.get_content_disposition() == 'attachment':
+                        filename = part.get_filename()
+                        if filename and filename.lower().endswith(('.xls', '.xlsx')):
+                            filepath = os.path.join(temp_dir, filename)
+                            with open(filepath, 'wb') as f:
+                                f.write(part.get_payload(decode=True))
+                            results["excel_files"].append(filepath)
+                            if status_callback:
+                                status_callback(f"Descargado: {filename}", "SUCCESS")
 
-                    for part in msg.walk():
-                        if part.get_content_disposition() == 'attachment':
-                            filename = part.get_filename()
-                            if filename and filename.lower().endswith(('.xls', '.xlsx')):
-                                filepath = os.path.join(temp_dir, filename)
-                                with open(filepath, 'wb') as f:
-                                    f.write(part.get_payload(decode=True))
-                                results["excel_files"].append(filepath)
-                                if status_callback:
-                                    status_callback(f"Descargado: {filename}", "SUCCESS")
-
-                    # Marcar como leído después de procesar
-                    imap.store(num, '+FLAGS', '\\Seen')
+                # Marcar como leído después de procesar
+                imap.store(num, '+FLAGS', '\\Seen')
+        except socket.timeout:
+            results["errors"].append("Timeout de conexión IMAP")
+            if status_callback:
+                status_callback("Error: Timeout de conexión IMAP", "ERROR")
+            logger.error("Timeout de conexión IMAP")
         except Exception as e:
             results["errors"].append(str(e))
             if status_callback:
                 status_callback(f"Error: {e}", "ERROR")
             logger.error(f"Error en búsqueda IMAP: {e}")
+        finally:
+            if imap:
+                try:
+                    imap.logout()
+                except:
+                    pass
+
+        if results["errors"]:
             return results
 
         results["success"] = True
@@ -185,6 +211,10 @@ class EmailConnector:
             logger.info(f"Correo enviado a {to_email}")
             return True, "Correo enviado exitosamente"
 
+        except socket.timeout:
+            error_msg = f"Timeout al enviar correo a {to_email}"
+            logger.error(error_msg)
+            return False, error_msg
         except Exception as e:
             logger.error(f"Error al enviar correo a {to_email}: {e}")
             return False, str(e)
@@ -194,6 +224,7 @@ class EmailConnector:
         """
         Monitorea correos no leídos con un título específico, los marca como leídos
         y envía notificaciones a los usuarios especificados.
+        OPTIMIZADO: Usa timeouts y mejor manejo de errores.
         """
         results = {
             "success": False,
@@ -207,54 +238,56 @@ class EmailConnector:
         folder_path = (folder_path or "INBOX").strip() or "INBOX"
         prepared_filters = self._prepare_title_filters(title_filter)
 
+        imap = None
         try:
-            with imaplib.IMAP4_SSL(self.imap_server, self.imap_port) as imap:
-                imap.login(self.email_address, self.password)
-                imap.select(folder_path)
+            # Agregar timeout de 30 segundos para evitar bloqueos indefinidos
+            imap = imaplib.IMAP4_SSL(self.imap_server, self.imap_port, timeout=30)
+            imap.login(self.email_address, self.password)
+            imap.select(folder_path)
 
-                # Buscar solo correos NO LEÍDOS de hoy
-                date_str = datetime.now().strftime('%d-%b-%Y')
-                typ, data = imap.search(None, 'UNSEEN', 'ON', date_str)
+            # Buscar solo correos NO LEÍDOS de hoy
+            date_str = datetime.now().strftime('%d-%b-%Y')
+            typ, data = imap.search(None, 'UNSEEN', 'ON', date_str)
 
+            if typ != 'OK':
+                results["message"] = "Error en búsqueda IMAP"
+                return results
+
+            email_ids = data[0].split()
+            results["total_items"] = len(email_ids)
+
+            if not email_ids:
+                results["success"] = True
+                results["message"] = "No hay correos nuevos"
+                return results
+
+            # Procesar cada correo
+            for num in email_ids:
+                # Leer encabezado para obtener asunto
+                typ, header_data = imap.fetch(num, '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM)])')
                 if typ != 'OK':
-                    results["message"] = "Error en búsqueda IMAP"
-                    return results
+                    continue
 
-                email_ids = data[0].split()
-                results["total_items"] = len(email_ids)
+                header_msg = email.message_from_bytes(header_data[0][1])
+                subject = header_msg.get('Subject', '')
+                from_email = header_msg.get('From', '')
 
-                if not email_ids:
-                    results["success"] = True
-                    results["message"] = "No hay correos nuevos"
-                    return results
+                # Verificar si el asunto coincide con el filtro
+                if not self._subject_matches(subject, prepared_filters):
+                    continue
 
-                # Procesar cada correo
-                for num in email_ids:
-                    # Leer encabezado para obtener asunto
-                    typ, header_data = imap.fetch(num, '(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM)])')
-                    if typ != 'OK':
-                        continue
+                results["matching_items"] += 1
 
-                    header_msg = email.message_from_bytes(header_data[0][1])
-                    subject = header_msg.get('Subject', '')
-                    from_email = header_msg.get('From', '')
+                # Marcar como leído
+                imap.store(num, '+FLAGS', '\\Seen')
 
-                    # Verificar si el asunto coincide con el filtro
-                    if not self._subject_matches(subject, prepared_filters):
-                        continue
+                if status_callback:
+                    status_callback(f"Correo detectado: '{subject}' de {from_email}", "INFO")
 
-                    results["matching_items"] += 1
-
-                    # Marcar como leído
-                    imap.store(num, '+FLAGS', '\\Seen')
-
-                    if status_callback:
-                        status_callback(f"Correo detectado: '{subject}' de {from_email}", "INFO")
-
-                    # Enviar notificación a cada usuario
-                    for notify_email in notify_emails:
-                        notification_subject = "Correo Detectado - BotLibertyBD"
-                        notification_body = f"""Se ha detectado un nuevo correo que coincide con sus criterios de búsqueda.
+                # Enviar notificación a cada usuario
+                for notify_email in notify_emails:
+                    notification_subject = "Correo Detectado - BotLibertyBD"
+                    notification_body = f"""Se ha detectado un nuevo correo que coincide con sus criterios de búsqueda.
 
 Asunto del correo: {subject}
 Remitente: {from_email}
@@ -265,26 +298,32 @@ El correo ha sido marcado como leído automáticamente.
 ---
 Este es un mensaje automático de BotLibertyBD."""
 
-                        success, message = self.send_simple_email(
-                            notify_email,
-                            notification_subject,
-                            notification_body
-                        )
+                    success, message = self.send_simple_email(
+                        notify_email,
+                        notification_subject,
+                        notification_body
+                    )
 
-                        if success:
-                            results["notified_users"] += 1
-                            if status_callback:
-                                status_callback(f"Notificación enviada a {notify_email}", "SUCCESS")
-                        else:
-                            error_msg = f"Error al notificar a {notify_email}: {message}"
-                            results["errors"].append(error_msg)
-                            if status_callback:
-                                status_callback(error_msg, "ERROR")
+                    if success:
+                        results["notified_users"] += 1
+                        if status_callback:
+                            status_callback(f"Notificación enviada a {notify_email}", "SUCCESS")
+                    else:
+                        error_msg = f"Error al notificar a {notify_email}: {message}"
+                        results["errors"].append(error_msg)
+                        if status_callback:
+                            status_callback(error_msg, "ERROR")
 
             results["success"] = True
             results["message"] = f"{results['matching_items']} correo(s) detectado(s), {results['notified_users']} notificación(es) enviada(s)"
-            return results
 
+        except socket.timeout:
+            error_msg = "Timeout de conexión IMAP en monitoreo"
+            results["errors"].append(error_msg)
+            results["message"] = error_msg
+            if status_callback:
+                status_callback(error_msg, "ERROR")
+            logger.error(error_msg)
         except Exception as e:
             error_msg = f"Error en monitoreo: {str(e)}"
             results["errors"].append(error_msg)
@@ -292,4 +331,11 @@ Este es un mensaje automático de BotLibertyBD."""
             if status_callback:
                 status_callback(error_msg, "ERROR")
             logger.error(error_msg)
-            return results
+        finally:
+            if imap:
+                try:
+                    imap.logout()
+                except:
+                    pass
+
+        return results

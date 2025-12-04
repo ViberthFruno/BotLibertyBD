@@ -6,11 +6,15 @@ Este módulo implementa la pestaña principal optimizada de la aplicación, comb
 la gestión de perfiles de automatización y la configuración de conexión PostgreSQL
 y correo electrónico en una sola vista. La configuración se maneja completamente
 a través de archivos JSON sin valores hardcodeados.
+
+OPTIMIZADO: Usa threading para operaciones de red sin bloquear la UI.
 """
 
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
+import threading
+import queue
 
 from logger import logger
 from postgres_connector import PostgresConnector
@@ -50,8 +54,16 @@ class PrincipalTab:
         self.monitoring_active = False
         self.monitoring_job = None
 
+        # Threading para operaciones de red sin bloquear UI
+        self.monitoring_thread = None
+        self.message_queue = queue.Queue()
+        self.stop_monitoring_event = threading.Event()
+
         # Crear la estructura de la pestaña
         self._create_principal_tab()
+
+        # Iniciar el procesador de mensajes de la cola
+        self._process_queue()
 
     def _create_principal_tab(self):
         """Crea los widgets de la pestaña principal."""
@@ -364,6 +376,8 @@ class PrincipalTab:
                 return
 
             self.monitoring_active = True
+            self.stop_monitoring_event.clear()
+
             self.monitoring_button.configure(
                 text="⏸ Detener Monitoreo",
                 bg="#f44336"
@@ -378,9 +392,16 @@ class PrincipalTab:
         else:
             # Detener monitoreo
             self.monitoring_active = False
+            self.stop_monitoring_event.set()
+
             if self.monitoring_job:
                 self.parent.after_cancel(self.monitoring_job)
                 self.monitoring_job = None
+
+            # Esperar a que el hilo termine (si está corriendo)
+            if self.monitoring_thread and self.monitoring_thread.is_alive():
+                self.add_log("Esperando finalización del monitoreo actual...", "INFO")
+                # No bloqueamos esperando, el hilo se detendrá solo
 
             self.monitoring_button.configure(
                 text="▶ Iniciar Monitoreo",
@@ -421,46 +442,103 @@ class PrincipalTab:
         return True
 
     def _start_monitoring_cycle(self):
-        """Inicia un ciclo de monitoreo."""
+        """Inicia un ciclo de monitoreo usando threading para no bloquear la UI."""
         if not self.monitoring_active:
             return
 
-        self.add_log("Ejecutando ciclo de monitoreo...", "INFO")
-        self._execute_monitoring()
+        # Verificar que no haya un monitoreo ya corriendo
+        if self.monitoring_thread and self.monitoring_thread.is_alive():
+            self.add_log("Monitoreo anterior aún en ejecución, esperando...", "WARNING")
+            # Programar para verificar más tarde
+            self.monitoring_job = self.parent.after(10000, self._start_monitoring_cycle)
+            return
+
+        self.add_log("Iniciando ciclo de monitoreo...", "INFO")
+
+        # Crear y ejecutar el hilo de monitoreo
+        self.monitoring_thread = threading.Thread(
+            target=self._execute_monitoring_thread,
+            daemon=True
+        )
+        self.monitoring_thread.start()
 
         # Programar el próximo ciclo (cada 5 minutos = 300000 ms)
         self.monitoring_job = self.parent.after(300000, self._start_monitoring_cycle)
 
-    def _execute_monitoring(self):
-        """Ejecuta el proceso de monitoreo de correos."""
+    def _execute_monitoring_thread(self):
+        """
+        Ejecuta el proceso de monitoreo de correos en un hilo separado.
+        Usa la cola de mensajes para comunicarse con el hilo principal de Tkinter.
+        """
         if not self.email_connector:
-            self.add_log("Error: No hay conector de correo disponible", "ERROR")
+            self.message_queue.put(("log", "Error: No hay conector de correo disponible", "ERROR"))
+            return
+
+        if self.stop_monitoring_event.is_set():
             return
 
         try:
             # Buscar correos con los títulos configurados
             for title in self.search_params.get("titles", []):
-                self.add_log(f"Buscando correos con título: '{title}'", "INFO")
+                # Verificar si se solicitó detener
+                if self.stop_monitoring_event.is_set():
+                    self.message_queue.put(("log", "Monitoreo cancelado por usuario", "INFO"))
+                    return
+
+                self.message_queue.put(("log", f"Buscando correos con título: '{title}'", "INFO"))
+
+                # Callback seguro para threading
+                def thread_safe_callback(msg, level="INFO"):
+                    self.message_queue.put(("log", msg, level))
 
                 result = self.email_connector.monitor_and_notify(
                     title_filter=title,
                     notify_emails=self.notify_users,
-                    status_callback=lambda msg, level="INFO": self.add_log(msg, level)
+                    status_callback=thread_safe_callback
                 )
 
                 if result.get("success"):
                     matching = result.get("matching_items", 0)
                     if matching > 0:
-                        self.add_log(f"✓ {matching} correo(s) encontrado(s) y procesado(s)", "SUCCESS")
+                        self.message_queue.put(("log", f"✓ {matching} correo(s) encontrado(s) y procesado(s)", "SUCCESS"))
                     else:
-                        self.add_log("No se encontraron correos nuevos", "INFO")
+                        self.message_queue.put(("log", "No se encontraron correos nuevos", "INFO"))
                 else:
-                    self.add_log(f"Error en monitoreo: {result.get('message', 'Error desconocido')}", "ERROR")
+                    self.message_queue.put(("log", f"Error en monitoreo: {result.get('message', 'Error desconocido')}", "ERROR"))
+
+            self.message_queue.put(("log", "Ciclo de monitoreo completado", "SUCCESS"))
 
         except Exception as e:
             error_msg = f"Error durante el monitoreo: {str(e)}"
-            self.add_log(error_msg, "ERROR")
+            self.message_queue.put(("log", error_msg, "ERROR"))
             logger.error(error_msg)
+
+    def _process_queue(self):
+        """
+        Procesa mensajes de la cola en el hilo principal de Tkinter.
+        Esta función se llama periódicamente para actualizar la UI con mensajes
+        de hilos secundarios de forma segura.
+        """
+        try:
+            # Procesar todos los mensajes disponibles en la cola
+            while True:
+                try:
+                    msg_type, *args = self.message_queue.get_nowait()
+
+                    if msg_type == "log":
+                        # args[0] = message, args[1] = level
+                        message = args[0]
+                        level = args[1] if len(args) > 1 else "INFO"
+                        self.add_log(message, level)
+
+                except queue.Empty:
+                    break
+
+        except Exception as e:
+            logger.error(f"Error procesando cola de mensajes: {e}")
+
+        # Programar la próxima verificación (cada 100ms)
+        self.parent.after(100, self._process_queue)
 
     # ===============================
     # INTERFAZ PARA OTROS MÓDULOS
