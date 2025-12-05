@@ -1,13 +1,5 @@
 # main.py
-"""
-Punto de entrada principal para la aplicación EnlaceDB.
-
-Este archivo inicia la aplicación, carga la interfaz gráfica y configura
-el entorno necesario para la ejecución. Incluye manejo de excepciones y
-configuración para funcionar correctamente tanto en desarrollo como cuando
-se empaqueta con PyInstaller, garantizando una experiencia consistente
-para el usuario final.
-"""
+# Script principal que inicia la aplicación EnlaceDB, verifica dependencias e inicia la GUI.
 
 import os
 import sys
