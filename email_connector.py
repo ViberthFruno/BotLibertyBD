@@ -1060,7 +1060,7 @@ Generado automáticamente por BotLibertyBD
                                     table=table
                                 )
 
-                                if analisis_datos['success']:
+                                if analisis_datos and analisis_datos['success']:
                                     nuevos_count = len(analisis_datos.get('nuevos', []))
                                     actualizados_count = len(analisis_datos.get('actualizados', []))
                                     sin_cambios_count = len(analisis_datos.get('sin_cambios', []))
@@ -1072,7 +1072,7 @@ Generado automáticamente por BotLibertyBD
                                             f"{sin_cambios_count} sin cambios",
                                             "SUCCESS"
                                         )
-                                else:
+                                elif analisis_datos and not analisis_datos['success']:
                                     if status_callback:
                                         status_callback(f"⚠ Error en análisis: {analisis_datos.get('error', 'Desconocido')}", "WARNING")
 
