@@ -760,15 +760,12 @@ Generado automáticamente por BotLibertyBD
             story.append(Spacer(1, 0.3 * inch))
 
             # ===== EXTRAER DATOS =====
+            # Ahora analisis_datos es el sync_result con el nuevo formato
             total_registros = analisis_datos.get('total', 0)
-            nuevos = len(analisis_datos.get('nuevos', []))
-            actualizados = len(analisis_datos.get('actualizados', []))
+            nuevos = analisis_datos.get('nuevos', 0)
+            actualizados = analisis_datos.get('actualizados', 0)
+            desactivados = analisis_datos.get('desactivados', 0)
             sin_cambios = len(analisis_datos.get('sin_cambios', []))
-
-            # Extraer desactivados del sync_result si está disponible
-            desactivados = 0
-            if sync_result and isinstance(sync_result, dict):
-                desactivados = sync_result.get('desactivados', 0)
 
             # ===== GENERAR GRÁFICO DE BARRAS =====
             try:
@@ -897,11 +894,12 @@ Generado automáticamente por BotLibertyBD
 
             # ===== DETALLES DE REGISTROS =====
             # Mostrar primeros 10 nuevos (si hay)
-            if nuevos > 0:
+            nuevos_list = analisis_datos.get('nuevos_list', [])
+            if nuevos > 0 and nuevos_list:
                 story.append(Paragraph("📥 Registros Nuevos (Primeros 10)", subtitle_style))
                 detalle_nuevos = [['#', 'IMEI', 'Fecha Cliente']]
 
-                for idx, item in enumerate(analisis_datos['nuevos'][:10], 1):
+                for idx, item in enumerate(nuevos_list[:10], 1):
                     imei = item['imei']
                     fecha = item.get('fecha_cliente', 'N/A')
                     if fecha and hasattr(fecha, 'strftime'):
@@ -928,11 +926,12 @@ Generado automáticamente por BotLibertyBD
                 story.append(Spacer(1, 0.2 * inch))
 
             # Mostrar primeros 10 actualizados (si hay)
-            if actualizados > 0:
+            actualizados_list = analisis_datos.get('actualizados_list', [])
+            if actualizados > 0 and actualizados_list:
                 story.append(Paragraph("🔄 Registros Actualizados (Primeros 10)", subtitle_style))
                 detalle_actualizados = [['#', 'IMEI', 'Fecha Nueva', 'Fecha Anterior']]
 
-                for idx, item in enumerate(analisis_datos['actualizados'][:10], 1):
+                for idx, item in enumerate(actualizados_list[:10], 1):
                     imei = item['imei']
                     fecha_nueva = item.get('fecha_cliente', 'N/A')
                     fecha_anterior = item.get('fecha_anterior', 'N/A')
@@ -966,6 +965,40 @@ Generado automáticamente por BotLibertyBD
                     ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#fff3e0')]),
                 ]))
                 story.append(actualizados_table)
+                story.append(Spacer(1, 0.2 * inch))
+
+            # Mostrar primeros 10 desactivados (si hay) - NUEVO
+            desactivados_list = analisis_datos.get('desactivados_list', [])
+            if desactivados > 0 and desactivados_list:
+                story.append(Paragraph("🚫 Registros Desactivados (Primeros 10)", subtitle_style))
+                story.append(Paragraph("<i>Nota: Estos IMEIs están en la BD pero NO aparecen en el Excel recibido. NO fueron eliminados, solo marcados como inactivos.</i>", styles['Italic']))
+                story.append(Spacer(1, 0.1 * inch))
+                detalle_desactivados = [['#', 'IMEI', 'Fecha Cliente']]
+
+                for idx, item in enumerate(desactivados_list[:10], 1):
+                    imei = item['imei']
+                    fecha = item.get('fecha_cliente', 'N/A')
+                    if fecha and hasattr(fecha, 'strftime'):
+                        fecha = fecha.strftime('%Y-%m-%d')
+                    detalle_desactivados.append([str(idx), str(imei), str(fecha) if fecha else 'N/A'])
+
+                if desactivados > 10:
+                    detalle_desactivados.append(['...', f'(+{desactivados - 10} más)', '...'])
+
+                desactivados_table = Table(detalle_desactivados, colWidths=[0.5*inch, 3*inch, 2.5*inch])
+                desactivados_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f44336')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                    ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 1), (-1, -1), 9),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#ffcdd2')]),
+                ]))
+                story.append(desactivados_table)
                 story.append(Spacer(1, 0.2 * inch))
 
             # ===== PIE DE PÁGINA =====
@@ -1132,43 +1165,9 @@ Generado automáticamente por BotLibertyBD
                             if status_callback:
                                 status_callback(f"✓ {total_imeis} IMEI(s) extraídos del Excel", "SUCCESS")
 
-                            # Variables para almacenar el análisis
-                            analisis_datos = None
+                            # Sincronizar con la base de datos (si hay conector PostgreSQL)
                             sync_result = None
-
-                            # Analizar cambios en la BD ANTES de sincronizar (si hay conector PostgreSQL)
                             if postgres_connector and total_imeis > 0:
-                                if status_callback:
-                                    status_callback(f"🔍 Analizando cambios en la base de datos...", "INFO")
-
-                                analisis_datos = self.analizar_cambios_bd(
-                                    excel_data=extraction_result['data'],
-                                    postgres_connector=postgres_connector,
-                                    schema=schema,
-                                    table=table
-                                )
-
-                                # Validar que analizar_cambios_bd retornó un resultado válido
-                                if analisis_datos and analisis_datos.get('success', False):
-                                    nuevos_count = len(analisis_datos.get('nuevos', []))
-                                    actualizados_count = len(analisis_datos.get('actualizados', []))
-                                    sin_cambios_count = len(analisis_datos.get('sin_cambios', []))
-
-                                    if status_callback:
-                                        status_callback(
-                                            f"✓ Análisis completado: {nuevos_count} nuevos, "
-                                            f"{actualizados_count} actualizados, "
-                                            f"{sin_cambios_count} sin cambios",
-                                            "SUCCESS"
-                                        )
-                                elif analisis_datos and not analisis_datos.get('success', False):
-                                    if status_callback:
-                                        status_callback(f"⚠ Error en análisis: {analisis_datos.get('error', 'Desconocido')}", "WARNING")
-                                elif analisis_datos is None:
-                                    if status_callback:
-                                        status_callback(f"⚠ Error en análisis: Error al analizar cambios (None)", "WARNING")
-
-                                # Sincronizar con la base de datos
                                 if status_callback:
                                     status_callback(f"🔄 Sincronizando {total_imeis} IMEIs con la base de datos...", "INFO")
 
@@ -1193,14 +1192,14 @@ Generado automáticamente por BotLibertyBD
                                     if status_callback:
                                         status_callback(f"⚠ {error_msg}", "WARNING")
 
-                            # Generar reporte PDF con análisis (si se pudo analizar)
+                            # Generar reporte PDF con los resultados de sync_imeis
                             pdf_file_path = None
-                            if total_imeis > 0 and analisis_datos and analisis_datos.get('success', False):
+                            if total_imeis > 0 and sync_result and sync_result.get('success', False):
                                 if status_callback:
                                     status_callback(f"📄 Generando reporte PDF...", "INFO")
 
                                 pdf_success, pdf_path, pdf_error = self.generar_reporte_pdf(
-                                    analisis_datos=analisis_datos,
+                                    analisis_datos=sync_result,
                                     archivo_excel=excel_filename,
                                     ruta_salida=temp_dir,
                                     sync_result=sync_result
@@ -1249,23 +1248,25 @@ Generado automáticamente por BotLibertyBD
 
                         notification_body = "Se ha detectado y procesado exitosamente un correo con archivos adjuntos.\n\n"
 
-                        # Agregar resumen de procesamiento si hay datos de análisis
-                        if analisis_datos and analisis_datos.get('success', False):
-                            nuevos_count = len(analisis_datos.get('nuevos', []))
-                            actualizados_count = len(analisis_datos.get('actualizados', []))
-                            sin_cambios_count = len(analisis_datos.get('sin_cambios', []))
-                            total_count = analisis_datos.get('total', 0)
+                        # Agregar resumen de procesamiento si hay datos de sincronización
+                        if sync_result and sync_result.get('success', False):
+                            nuevos_count = sync_result.get('nuevos', 0)
+                            actualizados_count = sync_result.get('actualizados', 0)
+                            desactivados_count = sync_result.get('desactivados', 0)
+                            sin_cambios_count = len(sync_result.get('sin_cambios', []))
+                            total_count = sync_result.get('total', 0)
 
                             notification_body += "📊 RESUMEN DE PROCESAMIENTO:\n"
-                            notification_body += f"• Total de IMEIs sincronizados: {total_count}\n"
+                            notification_body += f"• Total de IMEIs en Excel: {total_count}\n"
                             notification_body += f"• Registros nuevos agregados: {nuevos_count}\n"
                             notification_body += f"• Registros actualizados: {actualizados_count}\n"
+                            notification_body += f"• Registros desactivados (no en Excel): {desactivados_count}\n"
                             notification_body += f"• Registros sin cambios: {sin_cambios_count}\n"
 
                             if excel_files:
                                 notification_body += f"• Archivo procesado: {os.path.basename(excel_files[0])}\n"
                         elif excel_files:
-                            # Si no hay análisis pero sí hay archivos Excel
+                            # Si no hay sincronización pero sí hay archivos Excel
                             notification_body += "📊 RESUMEN DE PROCESAMIENTO:\n"
                             notification_body += f"• Archivo procesado: {os.path.basename(excel_files[0])}\n"
 
