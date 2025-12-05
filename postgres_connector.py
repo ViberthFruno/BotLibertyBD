@@ -474,10 +474,14 @@ class PostgresConnector:
         """
         Sincroniza los IMEIs del Excel con la base de datos.
 
+        🔥 IMPORTANTE: EL BOT NO ELIMINA NADA DE LA BASE DE DATOS - NUNCA
+
         Implementa 3 casos:
         1. IMEIs nuevos (en Excel, no en BD) -> INSERT
         2. IMEIs existentes (en Excel y en BD) -> UPDATE
-        3. IMEIs obsoletos (en BD, no en Excel) -> UPDATE activo=false
+        3. IMEIs "desactivados" (en BD, no en Excel) -> UPDATE activo=false
+           NOTA: "Desactivados" significa que están en la BD pero NO aparecen en el Excel recibido.
+           Estos IMEIs NO se eliminan, solo se marcan como activo=false.
 
         Args:
             schema (str): Nombre del esquema.
@@ -485,13 +489,29 @@ class PostgresConnector:
             excel_data (list): Lista de diccionarios con keys 'imei' y 'fecha_cliente'.
 
         Returns:
-            dict: Resumen de operaciones realizadas.
+            dict: {
+                'success': bool,
+                'nuevos': int,                    # Cantidad de nuevos
+                'actualizados': int,              # Cantidad de actualizados
+                'desactivados': int,              # Cantidad de desactivados
+                'total': int,                     # Total procesado del Excel
+                'nuevos_list': [],                # Lista detallada de nuevos
+                'actualizados_list': [],          # Lista detallada de actualizados
+                'desactivados_list': [],          # Lista detallada de desactivados
+                'sin_cambios': [],                # Lista de IMEIs sin cambios
+                'errors': []
+            }
         """
         result = {
             'success': False,
             'nuevos': 0,
             'actualizados': 0,
             'desactivados': 0,
+            'total': len(excel_data),
+            'nuevos_list': [],
+            'actualizados_list': [],
+            'desactivados_list': [],
+            'sin_cambios': [],
             'errors': []
         }
 
@@ -501,13 +521,22 @@ class PostgresConnector:
                 result['errors'].append("No se pudo asegurar la existencia de la tabla")
                 return result
 
-            # Obtener todos los IMEIs de la base de datos (activos e inactivos)
-            query_get_all = f'SELECT imei_serie FROM "{schema}"."{table}";'
+            # Obtener todos los IMEIs de la base de datos con sus datos actuales
+            query_get_all = f'SELECT imei_serie, fecha_cliente, activo FROM "{schema}"."{table}";'
             db_imeis_result = self.execute_query(query_get_all)
 
-            db_imeis = set()
+            db_imeis_dict = {}
             if db_imeis_result:
-                db_imeis = {row[0] for row in db_imeis_result}
+                for row in db_imeis_result:
+                    imei_serie = row[0]
+                    fecha_bd = row[1]
+                    activo_bd = row[2]
+                    db_imeis_dict[imei_serie] = {
+                        'fecha_cliente': fecha_bd,
+                        'activo': activo_bd
+                    }
+
+            db_imeis = set(db_imeis_dict.keys())
 
             # Obtener IMEIs del Excel
             excel_imeis = {item['imei'] for item in excel_data if item.get('imei')}
@@ -525,31 +554,63 @@ class PostgresConnector:
                     """
                     if self.execute_query(insert_query, (imei, fecha_cliente, 'traiding_trustonic')):
                         result['nuevos'] += 1
+                        result['nuevos_list'].append({
+                            'imei': imei,
+                            'fecha_cliente': fecha_cliente
+                        })
                         logger.debug(f"IMEI nuevo insertado: {imei}")
                     else:
                         result['errors'].append(f"Error al insertar IMEI: {imei}")
 
-            # Caso 2: IMEIs existentes (en Excel y en BD) -> Actualizar
+            # Caso 2: IMEIs existentes (en Excel y en BD) -> Verificar si necesitan actualización
             existentes_imeis = excel_imeis & db_imeis
             for imei_data in excel_data:
                 imei = imei_data.get('imei')
                 if imei and imei in existentes_imeis:
                     fecha_cliente = imei_data.get('fecha_cliente')
-                    update_query = f"""
-                    UPDATE "{schema}"."{table}"
-                    SET fecha_cliente = %s,
-                        actualizado = CURRENT_TIMESTAMP,
-                        activo = TRUE,
-                        detalle = %s
-                    WHERE imei_serie = %s;
-                    """
-                    if self.execute_query(update_query, (fecha_cliente, 'traiding_trustonic', imei)):
-                        result['actualizados'] += 1
-                        logger.debug(f"IMEI actualizado: {imei}")
+                    fecha_bd = db_imeis_dict[imei]['fecha_cliente']
+                    activo_bd = db_imeis_dict[imei]['activo']
+
+                    # Verificar si hay cambios
+                    fecha_cambio = False
+                    if fecha_cliente is not None and fecha_bd is not None:
+                        # Comparar fechas normalizando a solo fecha (sin hora)
+                        fecha_excel_norm = fecha_cliente.date() if hasattr(fecha_cliente, 'date') else fecha_cliente
+                        fecha_bd_norm = fecha_bd.date() if hasattr(fecha_bd, 'date') else fecha_bd
+                        fecha_cambio = fecha_excel_norm != fecha_bd_norm
+                    elif fecha_cliente != fecha_bd:
+                        fecha_cambio = True
+
+                    # Solo actualizar si hay cambios en fecha o si estaba inactivo
+                    if fecha_cambio or not activo_bd:
+                        update_query = f"""
+                        UPDATE "{schema}"."{table}"
+                        SET fecha_cliente = %s,
+                            actualizado = CURRENT_TIMESTAMP,
+                            activo = TRUE,
+                            detalle = %s
+                        WHERE imei_serie = %s;
+                        """
+                        if self.execute_query(update_query, (fecha_cliente, 'traiding_trustonic', imei)):
+                            result['actualizados'] += 1
+                            result['actualizados_list'].append({
+                                'imei': imei,
+                                'fecha_cliente': fecha_cliente,
+                                'fecha_anterior': fecha_bd,
+                                'estaba_inactivo': not activo_bd
+                            })
+                            logger.debug(f"IMEI actualizado: {imei}")
+                        else:
+                            result['errors'].append(f"Error al actualizar IMEI: {imei}")
                     else:
-                        result['errors'].append(f"Error al actualizar IMEI: {imei}")
+                        # Sin cambios
+                        result['sin_cambios'].append({
+                            'imei': imei,
+                            'fecha_cliente': fecha_cliente
+                        })
 
             # Caso 3: IMEIs obsoletos (en BD, no en Excel) -> Marcar como inactivos
+            # 🔥 ESTOS NO SE ELIMINAN, SOLO SE MARCAN COMO INACTIVOS
             obsoletos_imeis = db_imeis - excel_imeis
             for imei in obsoletos_imeis:
                 update_query = f"""
@@ -560,6 +621,10 @@ class PostgresConnector:
                 """
                 if self.execute_query(update_query, (imei,)):
                     result['desactivados'] += 1
+                    result['desactivados_list'].append({
+                        'imei': imei,
+                        'fecha_cliente': db_imeis_dict[imei]['fecha_cliente']
+                    })
                     logger.debug(f"IMEI desactivado: {imei}")
                 else:
                     result['errors'].append(f"Error al desactivar IMEI: {imei}")
