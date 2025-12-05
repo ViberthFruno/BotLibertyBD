@@ -500,10 +500,16 @@ class PrincipalTab:
                 def thread_safe_callback(msg, level="INFO"):
                     self.message_queue.put(("log", msg, level))
 
+                # Obtener configuración de esquema y tabla
+                schema, table = self.get_schema_table_config()
+
                 result = self.email_connector.monitor_and_notify(
                     title_filter=title,
                     notify_emails=self.notify_users,
-                    status_callback=thread_safe_callback
+                    status_callback=thread_safe_callback,
+                    postgres_connector=self.postgres_connector,
+                    schema=schema,
+                    table=table
                 )
 
                 if result.get("success"):
