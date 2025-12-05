@@ -15,6 +15,7 @@ openpyxl>=3.1.0
 
 # Generación de reportes PDF
 reportlab>=4.0.0
+matplotlib>=3.5.0
 
 # Nota: Las siguientes librerías vienen incluidas con Python:
 # - smtplib (correo SMTP)
