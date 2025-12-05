@@ -94,14 +94,32 @@ class EnlaceDBApp(tk.Tk):
         self.center_window()
 
     def _try_load_icon(self):
-        """Intenta cargar el icono de la aplicación."""
+        """
+        Intenta cargar el icono de la aplicación.
+
+        Funciona tanto en desarrollo como cuando se empaqueta con PyInstaller.
+        Busca el icono primero en el directorio temporal de PyInstaller (_MEIPASS)
+        y luego en el directorio de la aplicación.
+        """
         try:
+            # Intentar primero con _MEIPASS (para PyInstaller)
+            if hasattr(sys, '_MEIPASS'):
+                icon_path = os.path.join(sys._MEIPASS, "icon.ico")
+                if os.path.exists(icon_path):
+                    self.iconbitmap(icon_path)
+                    logger.info(f"Icono cargado desde paquete: {icon_path}")
+                    return
+
+            # Si no está empaquetado, buscar en el directorio de la aplicación
             icon_path = os.path.join(get_app_directory(), "icon.ico")
             if os.path.exists(icon_path):
                 self.iconbitmap(icon_path)
-                logger.debug("Icono de aplicación cargado")
+                logger.info(f"Icono cargado: {icon_path}")
+            else:
+                logger.debug(f"Icono no encontrado en: {icon_path}")
+
         except Exception as e:
-            logger.debug(f"No se pudo cargar el icono: {e}")
+            logger.warning(f"No se pudo cargar el icono: {e}")
 
     def center_window(self):
         """Centra la ventana en la pantalla."""
