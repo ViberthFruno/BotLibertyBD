@@ -600,7 +600,13 @@ Generado automáticamente por BotLibertyBD
 
             existing_imeis = postgres_connector.execute_query(query, (imeis_excel,))
 
-            if not existing_imeis['success']:
+            # Validar que execute_query no retornó None
+            if existing_imeis is None:
+                resultado['error'] = "Error al consultar BD: No se pudo ejecutar la consulta (conexión perdida)"
+                logger.error("execute_query retornó None - posible pérdida de conexión PostgreSQL")
+                return resultado
+
+            if not existing_imeis.get('success', False):
                 resultado['error'] = f"Error al consultar BD: {', '.join(existing_imeis.get('errors', []))}"
                 return resultado
 
@@ -1060,7 +1066,8 @@ Generado automáticamente por BotLibertyBD
                                     table=table
                                 )
 
-                                if analisis_datos and analisis_datos['success']:
+                                # Validar que analizar_cambios_bd retornó un resultado válido
+                                if analisis_datos and analisis_datos.get('success', False):
                                     nuevos_count = len(analisis_datos.get('nuevos', []))
                                     actualizados_count = len(analisis_datos.get('actualizados', []))
                                     sin_cambios_count = len(analisis_datos.get('sin_cambios', []))
@@ -1072,9 +1079,12 @@ Generado automáticamente por BotLibertyBD
                                             f"{sin_cambios_count} sin cambios",
                                             "SUCCESS"
                                         )
-                                elif analisis_datos and not analisis_datos['success']:
+                                elif analisis_datos and not analisis_datos.get('success', False):
                                     if status_callback:
                                         status_callback(f"⚠ Error en análisis: {analisis_datos.get('error', 'Desconocido')}", "WARNING")
+                                elif analisis_datos is None:
+                                    if status_callback:
+                                        status_callback(f"⚠ Error en análisis: Error al analizar cambios (None)", "WARNING")
 
                                 # Sincronizar con la base de datos
                                 if status_callback:
@@ -1103,7 +1113,7 @@ Generado automáticamente por BotLibertyBD
 
                             # Generar reporte PDF con análisis (si se pudo analizar)
                             pdf_file_path = None
-                            if total_imeis > 0 and analisis_datos and analisis_datos['success']:
+                            if total_imeis > 0 and analisis_datos and analisis_datos.get('success', False):
                                 if status_callback:
                                     status_callback(f"📄 Generando reporte PDF...", "INFO")
 
@@ -1157,7 +1167,7 @@ Generado automáticamente por BotLibertyBD
                         notification_body = "Se ha detectado y procesado exitosamente un correo con archivos adjuntos.\n\n"
 
                         # Agregar resumen de procesamiento si hay datos de análisis
-                        if analisis_datos and analisis_datos['success']:
+                        if analisis_datos and analisis_datos.get('success', False):
                             nuevos_count = len(analisis_datos.get('nuevos', []))
                             actualizados_count = len(analisis_datos.get('actualizados', []))
                             sin_cambios_count = len(analisis_datos.get('sin_cambios', []))
