@@ -501,8 +501,8 @@ class PostgresConnector:
                 result['errors'].append("No se pudo asegurar la existencia de la tabla")
                 return result
 
-            # Obtener todos los IMEIs activos de la base de datos
-            query_get_all = f'SELECT imei_serie FROM "{schema}"."{table}" WHERE activo = TRUE;'
+            # Obtener todos los IMEIs de la base de datos (activos e inactivos)
+            query_get_all = f'SELECT imei_serie FROM "{schema}"."{table}";'
             db_imeis_result = self.execute_query(query_get_all)
 
             db_imeis = set()
