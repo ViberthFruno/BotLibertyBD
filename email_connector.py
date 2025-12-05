@@ -339,6 +339,7 @@ class EmailConnector:
     def extract_excel_data(excel_path, row=1, col_g='G', col_h='H'):
         """
         Extrae datos de un archivo Excel en posiciones específicas.
+        NOTA: Este método se mantiene por compatibilidad. Para IMEIs usar extract_all_imeis_from_excel.
 
         Args:
             excel_path: Ruta del archivo Excel
@@ -399,6 +400,105 @@ class EmailConnector:
         return result
 
     @staticmethod
+    def extract_all_imeis_from_excel(excel_path):
+        """
+        Extrae todos los IMEIs y fechas de un archivo Excel.
+        Lee desde la fila 2 (asumiendo fila 1 son encabezados):
+        - Columna A: IMEI
+        - Columna B: Registered at (fecha_cliente)
+
+        Args:
+            excel_path: Ruta del archivo Excel
+
+        Returns:
+            dict: {
+                'success': bool,
+                'data': lista de diccionarios con 'imei' y 'fecha_cliente',
+                'total_rows': número total de filas procesadas,
+                'error': mensaje de error (si aplica)
+            }
+        """
+        result = {
+            'success': False,
+            'data': [],
+            'total_rows': 0,
+            'error': None
+        }
+
+        try:
+            import openpyxl
+            from datetime import datetime
+
+            # Verificar que el archivo existe
+            if not os.path.exists(excel_path):
+                result['error'] = f"Archivo no encontrado: {excel_path}"
+                logger.error(result['error'])
+                return result
+
+            # Abrir el archivo Excel
+            workbook = openpyxl.load_workbook(excel_path, data_only=True)
+            sheet = workbook.active
+
+            # Procesar desde la fila 2 (fila 1 son encabezados)
+            for row in sheet.iter_rows(min_row=2, values_only=True):
+                # row[0] = columna A (IMEI)
+                # row[1] = columna B (Registered at)
+
+                imei = row[0] if len(row) > 0 else None
+                fecha_raw = row[1] if len(row) > 1 else None
+
+                # Saltar filas vacías
+                if not imei:
+                    continue
+
+                # Convertir imei a string y limpiar
+                imei_str = str(imei).strip()
+                if not imei_str:
+                    continue
+
+                # Procesar la fecha
+                fecha_cliente = None
+                if fecha_raw:
+                    # Si ya es un objeto datetime
+                    if isinstance(fecha_raw, datetime):
+                        fecha_cliente = fecha_raw
+                    # Si es un string, intentar parsearlo
+                    elif isinstance(fecha_raw, str):
+                        try:
+                            # Intentar varios formatos comunes
+                            for fmt in ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%Y-%m-%d %H:%M:%S']:
+                                try:
+                                    fecha_cliente = datetime.strptime(fecha_raw.strip(), fmt)
+                                    break
+                                except ValueError:
+                                    continue
+                        except Exception as e:
+                            logger.warning(f"No se pudo parsear fecha '{fecha_raw}': {e}")
+
+                # Agregar a la lista
+                result['data'].append({
+                    'imei': imei_str,
+                    'fecha_cliente': fecha_cliente
+                })
+                result['total_rows'] += 1
+
+            workbook.close()
+
+            result['success'] = True
+            logger.info(f"Extraídos {result['total_rows']} IMEIs del Excel: {excel_path}")
+
+        except ImportError:
+            result['error'] = "La librería 'openpyxl' no está instalada. Ejecute: pip install openpyxl"
+            logger.error(result['error'])
+        except Exception as e:
+            result['error'] = f"Error al extraer IMEIs del Excel: {str(e)}"
+            logger.error(result['error'])
+            import traceback
+            logger.debug(traceback.format_exc())
+
+        return result
+
+    @staticmethod
     def create_text_file_with_data(data_g, data_h, excel_filename, output_dir=None):
         """
         Crea un archivo de texto con los datos extraídos del Excel.
@@ -448,7 +548,8 @@ Generado automáticamente por BotLibertyBD
             return False, None, error_msg
 
     def monitor_and_notify(self, title_filter, notify_emails, folder_path="INBOX",
-                          status_callback=None, max_emails_to_check=50, max_matches=5):
+                          status_callback=None, max_emails_to_check=50, max_matches=5,
+                          postgres_connector=None, schema="automatizacion", table="datos_excel_doforms"):
         """
         Monitorea correos no leídos con un título específico, los marca como leídos
         y envía notificaciones a los usuarios especificados.
@@ -461,12 +562,16 @@ Generado automáticamente por BotLibertyBD
             status_callback: Callback para reportar estado
             max_emails_to_check: Máximo de correos a revisar por ciclo (default: 50)
             max_matches: Máximo de coincidencias a procesar por ciclo (default: 5)
+            postgres_connector: Conector de PostgreSQL para sincronizar IMEIs (opcional)
+            schema: Esquema de la base de datos (default: automatizacion)
+            table: Tabla de la base de datos (default: datos_excel_doforms)
         """
         results = {
             "success": False,
             "total_items": 0,
             "matching_items": 0,
             "notified_users": 0,
+            "imeis_sincronizados": 0,
             "errors": [],
             "message": ""
         }
@@ -572,25 +677,69 @@ Generado automáticamente por BotLibertyBD
                         excel_filename = os.path.basename(excel_path)
 
                         if status_callback:
-                            status_callback(f"📊 Extrayendo datos del Excel...", "INFO")
+                            status_callback(f"📊 Extrayendo IMEIs del Excel...", "INFO")
 
-                        # Extraer datos de columnas G y H
-                        extraction_result = self.extract_excel_data(excel_path)
+                        # Extraer todos los IMEIs del Excel (columnas A y B)
+                        extraction_result = self.extract_all_imeis_from_excel(excel_path)
 
                         if extraction_result['success']:
-                            data_g = extraction_result['data_g']
-                            data_h = extraction_result['data_h']
+                            total_imeis = extraction_result['total_rows']
 
                             if status_callback:
-                                status_callback(f"✓ Datos extraídos - G1: {data_g}, H1: {data_h}", "SUCCESS")
+                                status_callback(f"✓ {total_imeis} IMEI(s) extraídos del Excel", "SUCCESS")
 
-                            # Crear archivo de texto con los datos
-                            success, text_file_path, error_msg = self.create_text_file_with_data(
-                                data_g, data_h, excel_filename, temp_dir
-                            )
+                            # Sincronizar con la base de datos si hay conector PostgreSQL
+                            if postgres_connector and total_imeis > 0:
+                                if status_callback:
+                                    status_callback(f"🔄 Sincronizando {total_imeis} IMEIs con la base de datos...", "INFO")
 
-                            if success and status_callback:
-                                status_callback(f"✓ Archivo de texto creado", "SUCCESS")
+                                sync_result = postgres_connector.sync_imeis(
+                                    schema=schema,
+                                    table=table,
+                                    excel_data=extraction_result['data']
+                                )
+
+                                if sync_result['success']:
+                                    results['imeis_sincronizados'] = total_imeis
+                                    if status_callback:
+                                        status_callback(
+                                            f"✓ Sincronización completada: {sync_result['nuevos']} nuevos, "
+                                            f"{sync_result['actualizados']} actualizados, "
+                                            f"{sync_result['desactivados']} desactivados",
+                                            "SUCCESS"
+                                        )
+                                else:
+                                    error_msg = f"Error en sincronización: {', '.join(sync_result['errors'])}"
+                                    results['errors'].append(error_msg)
+                                    if status_callback:
+                                        status_callback(f"⚠ {error_msg}", "WARNING")
+
+                            # Crear archivo de texto con resumen (opcional)
+                            if total_imeis > 0:
+                                # Obtener primeros y últimos IMEIs para el resumen
+                                first_imei = extraction_result['data'][0]['imei'] if extraction_result['data'] else 'N/A'
+                                last_imei = extraction_result['data'][-1]['imei'] if extraction_result['data'] else 'N/A'
+
+                                summary_content = f"""=== RESUMEN DE PROCESAMIENTO DE IMEIs ===
+Fecha de procesamiento: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+Total de IMEIs procesados: {total_imeis}
+Primer IMEI: {first_imei}
+Último IMEI: {last_imei}
+
+Archivo procesado: {excel_filename}
+
+---
+Generado automáticamente por BotLibertyBD
+"""
+                                # Guardar resumen
+                                summary_file = os.path.join(temp_dir, 'resumen_imeis.txt')
+                                with open(summary_file, 'w', encoding='utf-8') as f:
+                                    f.write(summary_content)
+                                text_file_path = summary_file
+
+                                if status_callback:
+                                    status_callback(f"✓ Archivo de resumen creado", "SUCCESS")
                         else:
                             if status_callback:
                                 status_callback(f"⚠ Error al extraer datos: {extraction_result['error']}", "WARNING")
