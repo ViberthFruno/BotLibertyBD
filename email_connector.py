@@ -682,7 +682,7 @@ Generado automáticamente por BotLibertyBD
         return resultado
 
     @staticmethod
-    def generar_reporte_pdf(analisis_datos, archivo_excel, ruta_salida):
+    def generar_reporte_pdf(analisis_datos, archivo_excel, ruta_salida, sync_result=None):
         """
         Genera un reporte en PDF con el análisis de cambios en la BD.
 
@@ -690,6 +690,7 @@ Generado automáticamente por BotLibertyBD
             analisis_datos: Resultado de analizar_cambios_bd()
             archivo_excel: Nombre del archivo Excel procesado
             ruta_salida: Ruta donde guardar el PDF
+            sync_result: Resultado de sync_imeis() con información de desactivados (opcional)
 
         Returns:
             tuple: (success, file_path, error_message)
@@ -698,9 +699,13 @@ Generado automáticamente por BotLibertyBD
             from reportlab.lib.pagesizes import letter, A4
             from reportlab.lib import colors
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak, Image
             from reportlab.lib.units import inch
             from reportlab.lib.enums import TA_CENTER, TA_LEFT
+            import matplotlib
+            matplotlib.use('Agg')  # Backend sin GUI
+            import matplotlib.pyplot as plt
+            import tempfile
 
             # Crear PDF
             pdf_path = os.path.join(ruta_salida, 'reporte_sincronizacion.pdf')
@@ -754,19 +759,77 @@ Generado automáticamente por BotLibertyBD
             story.append(info_table)
             story.append(Spacer(1, 0.3 * inch))
 
-            # ===== ESTADÍSTICAS =====
-            story.append(Paragraph("📊 Estadísticas de Procesamiento", subtitle_style))
-
+            # ===== EXTRAER DATOS =====
             total_registros = analisis_datos.get('total', 0)
             nuevos = len(analisis_datos.get('nuevos', []))
             actualizados = len(analisis_datos.get('actualizados', []))
             sin_cambios = len(analisis_datos.get('sin_cambios', []))
 
+            # Extraer desactivados del sync_result si está disponible
+            desactivados = 0
+            if sync_result and isinstance(sync_result, dict):
+                desactivados = sync_result.get('desactivados', 0)
+
+            # ===== GENERAR GRÁFICO DE BARRAS =====
+            try:
+                # Crear figura para el gráfico
+                fig, ax = plt.subplots(figsize=(8, 5))
+
+                # Datos para el gráfico
+                categorias = ['Nuevos', 'Actualizados', 'Desactivados', 'Sin Cambios']
+                valores = [nuevos, actualizados, desactivados, sin_cambios]
+                colores_barras = ['#4caf50', '#ff9800', '#f44336', '#9e9e9e']
+
+                # Crear gráfico de barras
+                barras = ax.bar(categorias, valores, color=colores_barras, edgecolor='black', linewidth=1.2)
+
+                # Agregar valores encima de las barras
+                for barra in barras:
+                    altura = barra.get_height()
+                    ax.text(barra.get_x() + barra.get_width()/2., altura,
+                           f'{int(altura)}',
+                           ha='center', va='bottom', fontsize=11, fontweight='bold')
+
+                # Configuración del gráfico
+                ax.set_ylabel('Cantidad de IMEIs', fontsize=12, fontweight='bold')
+                ax.set_title('Cambios en Base de Datos', fontsize=14, fontweight='bold', pad=20)
+                ax.set_ylim(0, max(valores) * 1.15 if max(valores) > 0 else 10)
+                ax.grid(axis='y', alpha=0.3, linestyle='--')
+
+                # Mejorar apariencia
+                plt.tight_layout()
+
+                # Guardar gráfico en archivo temporal
+                grafico_temp = tempfile.NamedTemporaryFile(delete=False, suffix='.png', dir=ruta_salida)
+                plt.savefig(grafico_temp.name, dpi=150, bbox_inches='tight')
+                plt.close(fig)
+
+                # Agregar gráfico al PDF
+                story.append(Paragraph("📊 Resumen Visual de Cambios", subtitle_style))
+                img = Image(grafico_temp.name, width=6*inch, height=3.75*inch)
+                story.append(img)
+                story.append(Spacer(1, 0.3 * inch))
+
+                # Eliminar archivo temporal del gráfico
+                import os as os_module
+                try:
+                    os_module.unlink(grafico_temp.name)
+                except:
+                    pass
+
+            except Exception as e:
+                logger.warning(f"No se pudo generar gráfico: {str(e)}")
+                # Continuar sin el gráfico si hay error
+
+            # ===== ESTADÍSTICAS =====
+            story.append(Paragraph("📊 Estadísticas Detalladas", subtitle_style))
+
             stats_data = [
                 ['Métrica', 'Cantidad', 'Porcentaje'],
-                ['Total de Registros', str(total_registros), '100%'],
+                ['Total de Registros en Excel', str(total_registros), '100%'],
                 ['📥 Nuevos (INSERT)', str(nuevos), f'{(nuevos/total_registros*100):.1f}%' if total_registros > 0 else '0%'],
                 ['🔄 Actualizados (UPDATE)', str(actualizados), f'{(actualizados/total_registros*100):.1f}%' if total_registros > 0 else '0%'],
+                ['🚫 Desactivados (ya no en Excel)', str(desactivados), 'N/A'],
                 ['✓ Sin Cambios', str(sin_cambios), f'{(sin_cambios/total_registros*100):.1f}%' if total_registros > 0 else '0%'],
             ]
 
@@ -781,7 +844,8 @@ Generado automáticamente por BotLibertyBD
                 ('BACKGROUND', (0, 1), (-1, 1), colors.HexColor('#e8eaf6')),
                 ('BACKGROUND', (0, 2), (-1, 2), colors.HexColor('#c5e1a5')),
                 ('BACKGROUND', (0, 3), (-1, 3), colors.HexColor('#fff9c4')),
-                ('BACKGROUND', (0, 4), (-1, 4), colors.HexColor('#e0e0e0')),
+                ('BACKGROUND', (0, 4), (-1, 4), colors.HexColor('#ffcdd2')),
+                ('BACKGROUND', (0, 5), (-1, 5), colors.HexColor('#e0e0e0')),
                 ('GRID', (0, 0), (-1, -1), 1, colors.black),
                 ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
                 ('FONTSIZE', (0, 1), (-1, -1), 10),
@@ -791,7 +855,7 @@ Generado automáticamente por BotLibertyBD
             story.append(Spacer(1, 0.3 * inch))
 
             # ===== ANÁLISIS =====
-            story.append(Paragraph("📈 Análisis", subtitle_style))
+            story.append(Paragraph("📈 Análisis de Cambios", subtitle_style))
 
             analisis_text = ""
             if total_registros > 0:
@@ -799,15 +863,32 @@ Generado automáticamente por BotLibertyBD
                 porcentaje_actualizados = (actualizados/total_registros*100)
                 porcentaje_sin_cambios = (sin_cambios/total_registros*100)
 
+                # Análisis de nuevos
                 if porcentaje_nuevos >= 50:
-                    analisis_text += f"• El {porcentaje_nuevos:.1f}% de los registros son nuevos, indicando una adición significativa de datos.<br/>"
-                if porcentaje_actualizados >= 30:
-                    analisis_text += f"• El {porcentaje_actualizados:.1f}% de los registros fueron actualizados.<br/>"
-                if porcentaje_sin_cambios >= 50:
-                    analisis_text += f"• El {porcentaje_sin_cambios:.1f}% de los registros ya existían sin cambios.<br/>"
+                    analisis_text += f"• <b>Crecimiento significativo:</b> El {porcentaje_nuevos:.1f}% de los registros son nuevos ({nuevos} IMEIs agregados a la BD).<br/>"
+                elif nuevos > 0:
+                    analisis_text += f"• Se agregaron {nuevos} nuevos IMEIs ({porcentaje_nuevos:.1f}% del total).<br/>"
 
+                # Análisis de actualizados
+                if porcentaje_actualizados >= 30:
+                    analisis_text += f"• <b>Actualización masiva:</b> {actualizados} IMEIs fueron actualizados ({porcentaje_actualizados:.1f}%).<br/>"
+                elif actualizados > 0:
+                    analisis_text += f"• Se actualizaron {actualizados} IMEIs existentes ({porcentaje_actualizados:.1f}%).<br/>"
+
+                # Análisis de desactivados (NUEVO)
+                if desactivados > 0:
+                    analisis_text += f"• <b>IMEIs desactivados:</b> {desactivados} IMEIs ya no aparecen en el archivo Excel (marcados como inactivos en BD).<br/>"
+
+                # Análisis de sin cambios
+                if porcentaje_sin_cambios >= 50:
+                    analisis_text += f"• Base estable: {porcentaje_sin_cambios:.1f}% de los registros ya existían sin cambios.<br/>"
+
+                # Resumen general si no hay análisis específico
                 if not analisis_text:
-                    analisis_text = f"• Se procesaron {total_registros} registros con {nuevos} nuevos y {actualizados} actualizaciones.<br/>"
+                    analisis_text = f"• Se procesaron {total_registros} registros del Excel con {nuevos} nuevos, {actualizados} actualizaciones"
+                    if desactivados > 0:
+                        analisis_text += f" y {desactivados} desactivados"
+                    analisis_text += ".<br/>"
             else:
                 analisis_text = "• No se procesaron registros."
 
@@ -1053,6 +1134,7 @@ Generado automáticamente por BotLibertyBD
 
                             # Variables para almacenar el análisis
                             analisis_datos = None
+                            sync_result = None
 
                             # Analizar cambios en la BD ANTES de sincronizar (si hay conector PostgreSQL)
                             if postgres_connector and total_imeis > 0:
@@ -1120,7 +1202,8 @@ Generado automáticamente por BotLibertyBD
                                 pdf_success, pdf_path, pdf_error = self.generar_reporte_pdf(
                                     analisis_datos=analisis_datos,
                                     archivo_excel=excel_filename,
-                                    ruta_salida=temp_dir
+                                    ruta_salida=temp_dir,
+                                    sync_result=sync_result
                                 )
 
                                 if pdf_success:
