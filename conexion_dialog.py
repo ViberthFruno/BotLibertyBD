@@ -248,11 +248,13 @@ class ConexionDialog(tk.Toplevel):
         if success:
             self.postgres_connector = connector
             self.status_label.configure(text="Estado: ✓ Conexión exitosa", foreground="green")
-            messagebox.showinfo("Conexión exitosa", f"Conexión establecida correctamente.\n\n{message}")
+            # Mostrar en el log de actividad en lugar de messagebox
+            self.parent.add_log(f"✓ Conexión exitosa a PostgreSQL: {message}", "SUCCESS")
             logger.info(f"Conexión exitosa: {message}")
         else:
             self.status_label.configure(text="Estado: ✗ Error de conexión", foreground="red")
-            messagebox.showerror("Error de conexión", f"No se pudo conectar:\n\n{message}")
+            # Mostrar en el log de actividad en lugar de messagebox
+            self.parent.add_log(f"✗ Error de conexión a PostgreSQL: {message}", "ERROR")
             logger.error(f"Error de conexión: {message}")
 
     def verify_table(self):
@@ -265,15 +267,26 @@ class ConexionDialog(tk.Toplevel):
                                  "Debe especificar tanto el esquema como la tabla.")
             return
 
-        # Verificar que se haya probado la conexión primero
+        # Si no existe connector, intentar crear uno con los parámetros actuales
         if not self.postgres_connector:
-            messagebox.showwarning("Conexión requerida",
-                                   "Debe probar la conexión primero usando el botón 'Probar Conexión'.")
-            return
+            params = self._get_connection_params()
+            if not params:
+                self.status_label.configure(text="Estado: ✗ Campos incompletos", foreground="red")
+                return
 
+            try:
+                self.postgres_connector = PostgresConnector(**params)
+            except Exception as e:
+                messagebox.showerror("Error al crear conexión",
+                                   f"No se pudo crear la conexión: {str(e)}")
+                logger.error(f"Error al crear conexión para verificación: {str(e)}")
+                return
+
+        # Intentar conectar
         if not self.postgres_connector.connect():
             messagebox.showerror("Error de conexión",
-                                 "No se pudo conectar. Verifique la configuración.")
+                                 "No se pudo conectar. Verifique los parámetros de conexión.")
+            self.status_label.configure(text="Estado: ✗ Error de conexión", foreground="red")
             return
 
         try:
@@ -303,15 +316,26 @@ class ConexionDialog(tk.Toplevel):
                                  "Debe especificar tanto el esquema como la tabla.")
             return
 
-        # Verificar que se haya probado la conexión primero
+        # Si no existe connector, intentar crear uno con los parámetros actuales
         if not self.postgres_connector:
-            messagebox.showwarning("Conexión requerida",
-                                   "Debe probar la conexión primero usando el botón 'Probar Conexión'.")
-            return
+            params = self._get_connection_params()
+            if not params:
+                self.status_label.configure(text="Estado: ✗ Campos incompletos", foreground="red")
+                return
 
+            try:
+                self.postgres_connector = PostgresConnector(**params)
+            except Exception as e:
+                messagebox.showerror("Error al crear conexión",
+                                   f"No se pudo crear la conexión: {str(e)}")
+                logger.error(f"Error al crear conexión para limpiar datos: {str(e)}")
+                return
+
+        # Intentar conectar
         if not self.postgres_connector.connect():
             messagebox.showerror("Error de conexión",
-                                 "No se pudo conectar. Verifique la configuración.")
+                                 "No se pudo conectar. Verifique los parámetros de conexión.")
+            self.status_label.configure(text="Estado: ✗ Error de conexión", foreground="red")
             return
 
         try:
