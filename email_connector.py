@@ -547,6 +547,363 @@ Generado automáticamente por BotLibertyBD
             logger.error(error_msg)
             return False, None, error_msg
 
+    @staticmethod
+    def analizar_cambios_bd(excel_data, postgres_connector, schema, table):
+        """
+        Analiza qué cambios se realizarán en la BD antes de sincronizar.
+        Compara los IMEIs del Excel con los existentes en la base de datos.
+
+        Args:
+            excel_data: Lista de diccionarios con 'imei' y 'fecha_cliente' del Excel
+            postgres_connector: Conector de PostgreSQL
+            schema: Esquema de la base de datos
+            table: Tabla de la base de datos
+
+        Returns:
+            dict: {
+                'success': bool,
+                'nuevos': lista de IMEIs que se insertarán (no existen en BD),
+                'actualizados': lista de IMEIs que se actualizarán (existen pero con datos diferentes),
+                'sin_cambios': lista de IMEIs que ya existen con los mismos datos,
+                'total': total de registros procesados,
+                'error': mensaje de error (si aplica)
+            }
+        """
+        resultado = {
+            'success': False,
+            'nuevos': [],
+            'actualizados': [],
+            'sin_cambios': [],
+            'total': 0,
+            'error': None
+        }
+
+        try:
+            if not postgres_connector or not excel_data:
+                resultado['error'] = "Conector PostgreSQL o datos del Excel no disponibles"
+                return resultado
+
+            # Extraer solo los IMEIs del Excel para consulta
+            imeis_excel = [item['imei'] for item in excel_data]
+            resultado['total'] = len(imeis_excel)
+
+            if not imeis_excel:
+                resultado['success'] = True
+                return resultado
+
+            # Consultar IMEIs existentes en la base de datos
+            query = f"""
+                SELECT imei, fecha_cliente, activo
+                FROM {schema}.{table}
+                WHERE imei = ANY(%s)
+            """
+
+            existing_imeis = postgres_connector.execute_query(query, (imeis_excel,))
+
+            if not existing_imeis['success']:
+                resultado['error'] = f"Error al consultar BD: {', '.join(existing_imeis.get('errors', []))}"
+                return resultado
+
+            # Crear diccionario de IMEIs existentes para búsqueda rápida
+            existing_dict = {}
+            if existing_imeis.get('data'):
+                for row in existing_imeis['data']:
+                    imei = row[0]
+                    fecha_cliente = row[1]
+                    activo = row[2]
+                    existing_dict[imei] = {'fecha_cliente': fecha_cliente, 'activo': activo}
+
+            # Clasificar cada IMEI del Excel
+            for item in excel_data:
+                imei = item['imei']
+                fecha_cliente = item.get('fecha_cliente')
+
+                if imei not in existing_dict:
+                    # IMEI no existe en BD -> será insertado
+                    resultado['nuevos'].append({
+                        'imei': imei,
+                        'fecha_cliente': fecha_cliente
+                    })
+                else:
+                    # IMEI existe -> verificar si cambiará
+                    existing_fecha = existing_dict[imei]['fecha_cliente']
+                    existing_activo = existing_dict[imei]['activo']
+
+                    # Comparar fechas (considerar None como equivalente)
+                    fechas_diferentes = False
+                    if fecha_cliente is not None and existing_fecha is not None:
+                        # Comparar fechas normalizando a solo fecha (sin hora)
+                        if hasattr(fecha_cliente, 'date'):
+                            fecha_excel = fecha_cliente.date()
+                        else:
+                            fecha_excel = fecha_cliente
+
+                        if hasattr(existing_fecha, 'date'):
+                            fecha_bd = existing_fecha.date()
+                        else:
+                            fecha_bd = existing_fecha
+
+                        fechas_diferentes = fecha_excel != fecha_bd
+                    elif fecha_cliente != existing_fecha:
+                        fechas_diferentes = True
+
+                    # Si la fecha cambió o el registro estaba inactivo, será actualizado
+                    if fechas_diferentes or not existing_activo:
+                        resultado['actualizados'].append({
+                            'imei': imei,
+                            'fecha_cliente': fecha_cliente,
+                            'fecha_anterior': existing_fecha,
+                            'estaba_inactivo': not existing_activo
+                        })
+                    else:
+                        # Sin cambios
+                        resultado['sin_cambios'].append({
+                            'imei': imei,
+                            'fecha_cliente': fecha_cliente
+                        })
+
+            resultado['success'] = True
+            logger.info(f"Análisis completado: {len(resultado['nuevos'])} nuevos, "
+                       f"{len(resultado['actualizados'])} actualizados, "
+                       f"{len(resultado['sin_cambios'])} sin cambios")
+
+        except Exception as e:
+            resultado['error'] = f"Error al analizar cambios: {str(e)}"
+            logger.error(resultado['error'])
+            import traceback
+            logger.debug(traceback.format_exc())
+
+        return resultado
+
+    @staticmethod
+    def generar_reporte_pdf(analisis_datos, archivo_excel, ruta_salida):
+        """
+        Genera un reporte en PDF con el análisis de cambios en la BD.
+
+        Args:
+            analisis_datos: Resultado de analizar_cambios_bd()
+            archivo_excel: Nombre del archivo Excel procesado
+            ruta_salida: Ruta donde guardar el PDF
+
+        Returns:
+            tuple: (success, file_path, error_message)
+        """
+        try:
+            from reportlab.lib.pagesizes import letter, A4
+            from reportlab.lib import colors
+            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+            from reportlab.lib.units import inch
+            from reportlab.lib.enums import TA_CENTER, TA_LEFT
+
+            # Crear PDF
+            pdf_path = os.path.join(ruta_salida, 'reporte_sincronizacion.pdf')
+            doc = SimpleDocTemplate(pdf_path, pagesize=letter)
+            story = []
+            styles = getSampleStyleSheet()
+
+            # Estilo personalizado para título
+            title_style = ParagraphStyle(
+                'CustomTitle',
+                parent=styles['Heading1'],
+                fontSize=18,
+                textColor=colors.HexColor('#1a237e'),
+                spaceAfter=30,
+                alignment=TA_CENTER
+            )
+
+            # Estilo para subtítulos
+            subtitle_style = ParagraphStyle(
+                'CustomSubtitle',
+                parent=styles['Heading2'],
+                fontSize=14,
+                textColor=colors.HexColor('#283593'),
+                spaceAfter=12,
+                spaceBefore=12
+            )
+
+            # ===== ENCABEZADO =====
+            story.append(Paragraph("BotLibertyBD", title_style))
+            story.append(Paragraph("Reporte de Sincronización de IMEIs", subtitle_style))
+            story.append(Spacer(1, 0.2 * inch))
+
+            # Información general
+            fecha_generacion = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            info_data = [
+                ['Fecha de Generación:', fecha_generacion],
+                ['Archivo Procesado:', archivo_excel],
+            ]
+
+            info_table = Table(info_data, colWidths=[2.5*inch, 4*inch])
+            info_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#e3f2fd')),
+                ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+                ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            story.append(info_table)
+            story.append(Spacer(1, 0.3 * inch))
+
+            # ===== ESTADÍSTICAS =====
+            story.append(Paragraph("📊 Estadísticas de Procesamiento", subtitle_style))
+
+            total_registros = analisis_datos.get('total', 0)
+            nuevos = len(analisis_datos.get('nuevos', []))
+            actualizados = len(analisis_datos.get('actualizados', []))
+            sin_cambios = len(analisis_datos.get('sin_cambios', []))
+
+            stats_data = [
+                ['Métrica', 'Cantidad', 'Porcentaje'],
+                ['Total de Registros', str(total_registros), '100%'],
+                ['📥 Nuevos (INSERT)', str(nuevos), f'{(nuevos/total_registros*100):.1f}%' if total_registros > 0 else '0%'],
+                ['🔄 Actualizados (UPDATE)', str(actualizados), f'{(actualizados/total_registros*100):.1f}%' if total_registros > 0 else '0%'],
+                ['✓ Sin Cambios', str(sin_cambios), f'{(sin_cambios/total_registros*100):.1f}%' if total_registros > 0 else '0%'],
+            ]
+
+            stats_table = Table(stats_data, colWidths=[3*inch, 1.5*inch, 1.5*inch])
+            stats_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a237e')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 11),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('BACKGROUND', (0, 1), (-1, 1), colors.HexColor('#e8eaf6')),
+                ('BACKGROUND', (0, 2), (-1, 2), colors.HexColor('#c5e1a5')),
+                ('BACKGROUND', (0, 3), (-1, 3), colors.HexColor('#fff9c4')),
+                ('BACKGROUND', (0, 4), (-1, 4), colors.HexColor('#e0e0e0')),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 10),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            story.append(stats_table)
+            story.append(Spacer(1, 0.3 * inch))
+
+            # ===== ANÁLISIS =====
+            story.append(Paragraph("📈 Análisis", subtitle_style))
+
+            analisis_text = ""
+            if total_registros > 0:
+                porcentaje_nuevos = (nuevos/total_registros*100)
+                porcentaje_actualizados = (actualizados/total_registros*100)
+                porcentaje_sin_cambios = (sin_cambios/total_registros*100)
+
+                if porcentaje_nuevos >= 50:
+                    analisis_text += f"• El {porcentaje_nuevos:.1f}% de los registros son nuevos, indicando una adición significativa de datos.<br/>"
+                if porcentaje_actualizados >= 30:
+                    analisis_text += f"• El {porcentaje_actualizados:.1f}% de los registros fueron actualizados.<br/>"
+                if porcentaje_sin_cambios >= 50:
+                    analisis_text += f"• El {porcentaje_sin_cambios:.1f}% de los registros ya existían sin cambios.<br/>"
+
+                if not analisis_text:
+                    analisis_text = f"• Se procesaron {total_registros} registros con {nuevos} nuevos y {actualizados} actualizaciones.<br/>"
+            else:
+                analisis_text = "• No se procesaron registros."
+
+            story.append(Paragraph(analisis_text, styles['BodyText']))
+            story.append(Spacer(1, 0.3 * inch))
+
+            # ===== DETALLES DE REGISTROS =====
+            # Mostrar primeros 10 nuevos (si hay)
+            if nuevos > 0:
+                story.append(Paragraph("📥 Registros Nuevos (Primeros 10)", subtitle_style))
+                detalle_nuevos = [['#', 'IMEI', 'Fecha Cliente']]
+
+                for idx, item in enumerate(analisis_datos['nuevos'][:10], 1):
+                    imei = item['imei']
+                    fecha = item.get('fecha_cliente', 'N/A')
+                    if fecha and hasattr(fecha, 'strftime'):
+                        fecha = fecha.strftime('%Y-%m-%d')
+                    detalle_nuevos.append([str(idx), str(imei), str(fecha) if fecha else 'N/A'])
+
+                if nuevos > 10:
+                    detalle_nuevos.append(['...', f'(+{nuevos - 10} más)', '...'])
+
+                nuevos_table = Table(detalle_nuevos, colWidths=[0.5*inch, 3*inch, 2.5*inch])
+                nuevos_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4caf50')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                    ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 1), (-1, -1), 9),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f1f8e9')]),
+                ]))
+                story.append(nuevos_table)
+                story.append(Spacer(1, 0.2 * inch))
+
+            # Mostrar primeros 10 actualizados (si hay)
+            if actualizados > 0:
+                story.append(Paragraph("🔄 Registros Actualizados (Primeros 10)", subtitle_style))
+                detalle_actualizados = [['#', 'IMEI', 'Fecha Nueva', 'Fecha Anterior']]
+
+                for idx, item in enumerate(analisis_datos['actualizados'][:10], 1):
+                    imei = item['imei']
+                    fecha_nueva = item.get('fecha_cliente', 'N/A')
+                    fecha_anterior = item.get('fecha_anterior', 'N/A')
+
+                    if fecha_nueva and hasattr(fecha_nueva, 'strftime'):
+                        fecha_nueva = fecha_nueva.strftime('%Y-%m-%d')
+                    if fecha_anterior and hasattr(fecha_anterior, 'strftime'):
+                        fecha_anterior = fecha_anterior.strftime('%Y-%m-%d')
+
+                    detalle_actualizados.append([
+                        str(idx),
+                        str(imei),
+                        str(fecha_nueva) if fecha_nueva else 'N/A',
+                        str(fecha_anterior) if fecha_anterior else 'N/A'
+                    ])
+
+                if actualizados > 10:
+                    detalle_actualizados.append(['...', f'(+{actualizados - 10} más)', '...', '...'])
+
+                actualizados_table = Table(detalle_actualizados, colWidths=[0.5*inch, 2.5*inch, 1.5*inch, 1.5*inch])
+                actualizados_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#ff9800')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                    ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                    ('FONTSIZE', (0, 1), (-1, -1), 9),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#fff3e0')]),
+                ]))
+                story.append(actualizados_table)
+                story.append(Spacer(1, 0.2 * inch))
+
+            # ===== PIE DE PÁGINA =====
+            story.append(Spacer(1, 0.5 * inch))
+            timestamp_final = datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC-6')
+            footer_text = f"<br/><br/>---<br/>[Timestamp: {timestamp_final}]<br/>Generado automáticamente por BotLibertyBD"
+            story.append(Paragraph(footer_text, styles['Normal']))
+
+            # Construir PDF
+            doc.build(story)
+
+            logger.info(f"Reporte PDF generado: {pdf_path}")
+            return True, pdf_path, None
+
+        except ImportError as e:
+            error_msg = f"Error: La librería 'reportlab' no está instalada. Ejecute: pip install reportlab"
+            logger.error(error_msg)
+            return False, None, error_msg
+        except Exception as e:
+            error_msg = f"Error al generar PDF: {str(e)}"
+            logger.error(error_msg)
+            import traceback
+            logger.debug(traceback.format_exc())
+            return False, None, error_msg
+
     def monitor_and_notify(self, title_filter, notify_emails, folder_path="INBOX",
                           status_callback=None, max_emails_to_check=50, max_matches=5,
                           postgres_connector=None, schema="automatizacion", table="datos_excel_doforms"):
@@ -688,8 +1045,38 @@ Generado automáticamente por BotLibertyBD
                             if status_callback:
                                 status_callback(f"✓ {total_imeis} IMEI(s) extraídos del Excel", "SUCCESS")
 
-                            # Sincronizar con la base de datos si hay conector PostgreSQL
+                            # Variables para almacenar el análisis
+                            analisis_datos = None
+
+                            # Analizar cambios en la BD ANTES de sincronizar (si hay conector PostgreSQL)
                             if postgres_connector and total_imeis > 0:
+                                if status_callback:
+                                    status_callback(f"🔍 Analizando cambios en la base de datos...", "INFO")
+
+                                analisis_datos = self.analizar_cambios_bd(
+                                    excel_data=extraction_result['data'],
+                                    postgres_connector=postgres_connector,
+                                    schema=schema,
+                                    table=table
+                                )
+
+                                if analisis_datos['success']:
+                                    nuevos_count = len(analisis_datos.get('nuevos', []))
+                                    actualizados_count = len(analisis_datos.get('actualizados', []))
+                                    sin_cambios_count = len(analisis_datos.get('sin_cambios', []))
+
+                                    if status_callback:
+                                        status_callback(
+                                            f"✓ Análisis completado: {nuevos_count} nuevos, "
+                                            f"{actualizados_count} actualizados, "
+                                            f"{sin_cambios_count} sin cambios",
+                                            "SUCCESS"
+                                        )
+                                else:
+                                    if status_callback:
+                                        status_callback(f"⚠ Error en análisis: {analisis_datos.get('error', 'Desconocido')}", "WARNING")
+
+                                # Sincronizar con la base de datos
                                 if status_callback:
                                     status_callback(f"🔄 Sincronizando {total_imeis} IMEIs con la base de datos...", "INFO")
 
@@ -714,9 +1101,29 @@ Generado automáticamente por BotLibertyBD
                                     if status_callback:
                                         status_callback(f"⚠ {error_msg}", "WARNING")
 
-                            # Crear archivo de texto con resumen (opcional)
-                            if total_imeis > 0:
-                                # Obtener primeros y últimos IMEIs para el resumen
+                            # Generar reporte PDF con análisis (si se pudo analizar)
+                            pdf_file_path = None
+                            if total_imeis > 0 and analisis_datos and analisis_datos['success']:
+                                if status_callback:
+                                    status_callback(f"📄 Generando reporte PDF...", "INFO")
+
+                                pdf_success, pdf_path, pdf_error = self.generar_reporte_pdf(
+                                    analisis_datos=analisis_datos,
+                                    archivo_excel=excel_filename,
+                                    ruta_salida=temp_dir
+                                )
+
+                                if pdf_success:
+                                    pdf_file_path = pdf_path
+                                    if status_callback:
+                                        status_callback(f"✓ Reporte PDF generado exitosamente", "SUCCESS")
+                                else:
+                                    if status_callback:
+                                        status_callback(f"⚠ Error al generar PDF: {pdf_error}", "WARNING")
+                                    logger.warning(f"No se pudo generar PDF: {pdf_error}")
+
+                            # Si no se generó PDF, crear archivo de texto de respaldo (fallback)
+                            if not pdf_file_path and total_imeis > 0:
                                 first_imei = extraction_result['data'][0]['imei'] if extraction_result['data'] else 'N/A'
                                 last_imei = extraction_result['data'][-1]['imei'] if extraction_result['data'] else 'N/A'
 
@@ -732,14 +1139,13 @@ Archivo procesado: {excel_filename}
 ---
 Generado automáticamente por BotLibertyBD
 """
-                                # Guardar resumen
                                 summary_file = os.path.join(temp_dir, 'resumen_imeis.txt')
                                 with open(summary_file, 'w', encoding='utf-8') as f:
                                     f.write(summary_content)
                                 text_file_path = summary_file
 
                                 if status_callback:
-                                    status_callback(f"✓ Archivo de resumen creado", "SUCCESS")
+                                    status_callback(f"✓ Archivo de resumen creado (fallback)", "INFO")
                         else:
                             if status_callback:
                                 status_callback(f"⚠ Error al extraer datos: {extraction_result['error']}", "WARNING")
@@ -749,31 +1155,56 @@ Generado automáticamente por BotLibertyBD
 
                     # Enviar notificación a cada usuario
                     for notify_email in notify_emails:
-                        notification_subject = "Correo Detectado - BotLibertyBD"
+                        notification_subject = "✅ Notificación de Procesamiento - BotLibertyBD"
 
-                        # Preparar cuerpo del mensaje
-                        notification_body = f"""Se ha detectado un nuevo correo que coincide con sus criterios de búsqueda.
+                        # Preparar cuerpo del mensaje con nuevo formato
+                        timestamp_actual = datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC-6')
 
-Asunto del correo: {subject}
-Remitente: {from_email}
-Fecha de detección: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+                        notification_body = "✅ Notificación de Procesamiento - BotLibertyBD\n\n"
+                        notification_body += "Se ha detectado y procesado exitosamente un correo con archivos adjuntos.\n\n"
 
-El correo ha sido marcado como leído automáticamente."""
+                        # Agregar resumen de procesamiento si hay datos de análisis
+                        if analisis_datos and analisis_datos['success']:
+                            nuevos_count = len(analisis_datos.get('nuevos', []))
+                            actualizados_count = len(analisis_datos.get('actualizados', []))
+                            sin_cambios_count = len(analisis_datos.get('sin_cambios', []))
+                            total_count = analisis_datos.get('total', 0)
 
-                        if excel_files:
-                            notification_body += f"\n\n📎 Se encontró un archivo Excel adjunto: {os.path.basename(excel_files[0])}"
-                            if text_file_path:
-                                notification_body += f"\n📄 Los datos extraídos (columnas G y H) se adjuntan en este correo."
+                            notification_body += "📊 RESUMEN DE PROCESAMIENTO:\n"
+                            notification_body += f"• Total de IMEIs sincronizados: {total_count}\n"
+                            notification_body += f"• Registros nuevos agregados: {nuevos_count}\n"
+                            notification_body += f"• Registros actualizados: {actualizados_count}\n"
+                            notification_body += f"• Registros sin cambios: {sin_cambios_count}\n"
 
-                        notification_body += "\n\n---\nEste es un mensaje automático de BotLibertyBD."
+                            if excel_files:
+                                notification_body += f"• Archivo procesado: {os.path.basename(excel_files[0])}\n"
+                        elif excel_files:
+                            # Si no hay análisis pero sí hay archivos Excel
+                            notification_body += "📊 RESUMEN DE PROCESAMIENTO:\n"
+                            notification_body += f"• Archivo procesado: {os.path.basename(excel_files[0])}\n"
 
-                        # Enviar correo con o sin adjunto
-                        if text_file_path and os.path.exists(text_file_path):
+                        # Indicar si hay PDF adjunto
+                        if pdf_file_path and os.path.exists(pdf_file_path):
+                            notification_body += "\n📎 Se adjunta un reporte detallado en formato PDF con el análisis completo.\n"
+                        elif text_file_path and os.path.exists(text_file_path):
+                            notification_body += "\n📎 Se adjunta un archivo de resumen con los datos procesados.\n"
+
+                        # Timestamp al final
+                        notification_body += f"\n---\nEste es un mensaje automático de BotLibertyBD.\n[Timestamp: {timestamp_actual}]"
+
+                        # Enviar correo con adjunto (preferir PDF, luego TXT, sino sin adjunto)
+                        attachment_to_send = None
+                        if pdf_file_path and os.path.exists(pdf_file_path):
+                            attachment_to_send = pdf_file_path
+                        elif text_file_path and os.path.exists(text_file_path):
+                            attachment_to_send = text_file_path
+
+                        if attachment_to_send:
                             success, message = self.send_email_with_attachment(
                                 notify_email,
                                 notification_subject,
                                 notification_body,
-                                text_file_path
+                                attachment_to_send
                             )
                         else:
                             success, message = self.send_simple_email(
