@@ -1124,15 +1124,10 @@ Generado automáticamente por BotLibertyBD
 
                             # Si no se generó PDF, crear archivo de texto de respaldo (fallback)
                             if not pdf_file_path and total_imeis > 0:
-                                first_imei = extraction_result['data'][0]['imei'] if extraction_result['data'] else 'N/A'
-                                last_imei = extraction_result['data'][-1]['imei'] if extraction_result['data'] else 'N/A'
-
                                 summary_content = f"""=== RESUMEN DE PROCESAMIENTO DE IMEIs ===
 Fecha de procesamiento: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 Total de IMEIs procesados: {total_imeis}
-Primer IMEI: {first_imei}
-Último IMEI: {last_imei}
 
 Archivo procesado: {excel_filename}
 
@@ -1155,13 +1150,11 @@ Generado automáticamente por BotLibertyBD
 
                     # Enviar notificación a cada usuario
                     for notify_email in notify_emails:
-                        notification_subject = "✅ Notificación de Procesamiento - BotLibertyBD"
+                        # Preparar timestamp para el título
+                        timestamp_actual = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        notification_subject = f"Notificación de Procesamiento - BotLibertyBD {timestamp_actual}"
 
-                        # Preparar cuerpo del mensaje con nuevo formato
-                        timestamp_actual = datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC-6')
-
-                        notification_body = "✅ Notificación de Procesamiento - BotLibertyBD\n\n"
-                        notification_body += "Se ha detectado y procesado exitosamente un correo con archivos adjuntos.\n\n"
+                        notification_body = "Se ha detectado y procesado exitosamente un correo con archivos adjuntos.\n\n"
 
                         # Agregar resumen de procesamiento si hay datos de análisis
                         if analisis_datos and analisis_datos['success']:
@@ -1189,8 +1182,8 @@ Generado automáticamente por BotLibertyBD
                         elif text_file_path and os.path.exists(text_file_path):
                             notification_body += "\n📎 Se adjunta un archivo de resumen con los datos procesados.\n"
 
-                        # Timestamp al final
-                        notification_body += f"\n---\nEste es un mensaje automático de BotLibertyBD.\n[Timestamp: {timestamp_actual}]"
+                        # Pie de mensaje
+                        notification_body += "\n---\nEste es un mensaje automático de BotLibertyBD."
 
                         # Enviar correo con adjunto (preferir PDF, luego TXT, sino sin adjunto)
                         attachment_to_send = None
