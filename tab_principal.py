@@ -21,6 +21,7 @@ from postgres_connector import PostgresConnector
 from conexion_dialog import ConexionDialog
 from correo_dialog import CorreoDialog
 from email_connector import EmailConnector
+from carga_manual_dialog import CargaManualDialog
 
 
 class PrincipalTab:
@@ -176,6 +177,18 @@ class PrincipalTab:
             width=25
         )
         self.notify_users_button.pack(pady=5)
+
+        # Separador
+        ttk.Separator(config_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
+
+        # Botón para Carga Manual de Excel
+        self.manual_upload_button = ttk.Button(
+            config_frame,
+            text="📤 Carga Manual de Excel",
+            command=self._open_manual_upload,
+            width=25
+        )
+        self.manual_upload_button.pack(pady=5)
 
         # Información de estado
         self.status_info = ttk.Label(
@@ -376,6 +389,39 @@ class PrincipalTab:
             error_msg = f"Error al abrir usuarios a notificar: {str(e)}"
             self.add_log(error_msg, "ERROR")
             messagebox.showerror("Error", f"No se pudo abrir la configuración:\n\n{str(e)}")
+
+    def _open_manual_upload(self):
+        """Abre el diálogo de Carga Manual de Excel."""
+        try:
+            # Verificar que hay configuración mínima necesaria
+            if not self.email_connector:
+                messagebox.showwarning(
+                    "Configuración Incompleta",
+                    "Debe configurar el correo electrónico antes de usar la carga manual."
+                )
+                self.add_log("Intento de carga manual sin configuración de correo", "WARNING")
+                return
+
+            # Obtener configuración de esquema y tabla
+            schema, table = self.get_schema_table_config()
+
+            # Crear y mostrar el diálogo
+            dialog = CargaManualDialog(
+                self.parent,
+                email_connector=self.email_connector,
+                postgres_connector=self.postgres_connector,
+                notify_users=self.notify_users,
+                schema=schema,
+                table=table
+            )
+            self.parent.wait_window(dialog)
+
+            self.add_log("Diálogo de carga manual cerrado", "INFO")
+
+        except Exception as e:
+            error_msg = f"Error al abrir carga manual: {str(e)}"
+            self.add_log(error_msg, "ERROR")
+            messagebox.showerror("Error", f"No se pudo abrir la carga manual:\n\n{str(e)}")
 
     def _toggle_monitoring(self):
         """Inicia o detiene el monitoreo de correos."""

@@ -1347,3 +1347,242 @@ Generado automáticamente por BotLibertyBD
                     pass
 
         return results
+
+    def process_manual_excel(self, excel_path, notify_emails, status_callback=None,
+                            postgres_connector=None, schema="automatizacion",
+                            table="datos_excel_doforms", send_notifications=True):
+        """
+        Procesa un archivo Excel manualmente sin depender del sistema de correo.
+        Permite control sobre el envío de notificaciones.
+
+        Args:
+            excel_path: Ruta completa al archivo Excel a procesar
+            notify_emails: Lista de emails a notificar (si send_notifications=True)
+            status_callback: Callback para reportar estado
+            postgres_connector: Conector de PostgreSQL para sincronizar IMEIs
+            schema: Esquema de la base de datos
+            table: Tabla de la base de datos
+            send_notifications: Si se deben enviar correos de notificación (default: True)
+
+        Returns:
+            Dict con resultados del procesamiento
+        """
+        results = {
+            "success": False,
+            "total_imeis": 0,
+            "notified_users": 0,
+            "sync_result": None,
+            "errors": [],
+            "message": ""
+        }
+
+        import tempfile
+        import shutil
+
+        if not os.path.exists(excel_path):
+            results["message"] = f"Archivo no encontrado: {excel_path}"
+            results["errors"].append(results["message"])
+            if status_callback:
+                status_callback(results["message"], "ERROR")
+            return results
+
+        excel_filename = os.path.basename(excel_path)
+
+        if status_callback:
+            status_callback(f"📊 Procesando archivo: {excel_filename}", "INFO")
+
+        # Crear directorio temporal para archivos generados
+        temp_dir = tempfile.mkdtemp(prefix="bot_liberty_manual_")
+
+        try:
+            # Extraer IMEIs del Excel
+            if status_callback:
+                status_callback("📊 Extrayendo IMEIs del Excel...", "INFO")
+
+            extraction_result = self.extract_all_imeis_from_excel(excel_path)
+
+            if not extraction_result['success']:
+                results["message"] = f"Error al extraer datos: {extraction_result['error']}"
+                results["errors"].append(results["message"])
+                if status_callback:
+                    status_callback(f"⚠ {results['message']}", "ERROR")
+                return results
+
+            total_imeis = extraction_result['total_rows']
+            results["total_imeis"] = total_imeis
+
+            if status_callback:
+                status_callback(f"✓ {total_imeis} IMEI(s) extraídos del Excel", "SUCCESS")
+
+            # Sincronizar con la base de datos (si hay conector PostgreSQL)
+            sync_result = None
+            if postgres_connector and total_imeis > 0:
+                if status_callback:
+                    status_callback(f"🔄 Sincronizando {total_imeis} IMEIs con la base de datos...", "INFO")
+
+                sync_result = postgres_connector.sync_imeis(
+                    schema=schema,
+                    table=table,
+                    excel_data=extraction_result['data']
+                )
+
+                if sync_result['success']:
+                    results['sync_result'] = sync_result
+                    if status_callback:
+                        status_callback(
+                            f"✓ Sincronización completada: {sync_result['nuevos']} nuevos, "
+                            f"{sync_result['actualizados']} actualizados, "
+                            f"{sync_result['desactivados']} desactivados",
+                            "SUCCESS"
+                        )
+                else:
+                    error_msg = f"Error en sincronización: {', '.join(sync_result['errors'])}"
+                    results['errors'].append(error_msg)
+                    if status_callback:
+                        status_callback(f"⚠ {error_msg}", "WARNING")
+
+            # Generar reporte PDF con los resultados (si hay sincronización exitosa)
+            pdf_file_path = None
+            text_file_path = None
+
+            if total_imeis > 0 and sync_result and sync_result.get('success', False):
+                if status_callback:
+                    status_callback("📄 Generando reporte PDF...", "INFO")
+
+                pdf_success, pdf_path, pdf_error = self.generar_reporte_pdf(
+                    analisis_datos=sync_result,
+                    archivo_excel=excel_filename,
+                    ruta_salida=temp_dir,
+                    sync_result=sync_result
+                )
+
+                if pdf_success:
+                    pdf_file_path = pdf_path
+                    if status_callback:
+                        status_callback("✓ Reporte PDF generado exitosamente", "SUCCESS")
+                else:
+                    if status_callback:
+                        status_callback(f"⚠ Error al generar PDF: {pdf_error}", "WARNING")
+                    logger.warning(f"No se pudo generar PDF: {pdf_error}")
+
+            # Si no se generó PDF, crear archivo de texto de respaldo
+            if not pdf_file_path and total_imeis > 0:
+                summary_content = f"""=== RESUMEN DE PROCESAMIENTO MANUAL DE IMEIs ===
+Fecha de procesamiento: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+Total de IMEIs procesados: {total_imeis}
+
+Archivo procesado: {excel_filename}
+
+---
+Generado automáticamente por BotLibertyBD - Carga Manual
+"""
+                summary_file = os.path.join(temp_dir, 'resumen_imeis_manual.txt')
+                with open(summary_file, 'w', encoding='utf-8') as f:
+                    f.write(summary_content)
+                text_file_path = summary_file
+
+                if status_callback:
+                    status_callback("✓ Archivo de resumen creado", "INFO")
+
+            # Enviar notificaciones SOLO si send_notifications=True
+            if send_notifications and notify_emails and total_imeis > 0:
+                if status_callback:
+                    status_callback(f"📧 Enviando notificaciones a {len(notify_emails)} usuario(s)...", "INFO")
+
+                for notify_email in notify_emails:
+                    # Preparar timestamp para el título
+                    timestamp_actual = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    notification_subject = f"Procesamiento Manual - BotLibertyBD {timestamp_actual}"
+
+                    notification_body = "Se ha procesado manualmente un archivo Excel con datos de IMEIs.\n\n"
+
+                    # Agregar resumen de procesamiento si hay datos de sincronización
+                    if sync_result and sync_result.get('success', False):
+                        nuevos_count = sync_result.get('nuevos', 0)
+                        actualizados_count = sync_result.get('actualizados', 0)
+                        desactivados_count = sync_result.get('desactivados', 0)
+                        sin_cambios_count = len(sync_result.get('sin_cambios', []))
+                        total_count = sync_result.get('total', 0)
+
+                        notification_body += "📊 RESUMEN DE PROCESAMIENTO:\n"
+                        notification_body += f"• Total de IMEIs en Excel: {total_count}\n"
+                        notification_body += f"• Registros nuevos agregados: {nuevos_count}\n"
+                        notification_body += f"• Registros actualizados: {actualizados_count}\n"
+                        notification_body += f"• Registros desactivados (no en Excel): {desactivados_count}\n"
+                        notification_body += f"• Registros sin cambios: {sin_cambios_count}\n"
+                        notification_body += f"• Archivo procesado: {excel_filename}\n"
+                    else:
+                        notification_body += "📊 RESUMEN DE PROCESAMIENTO:\n"
+                        notification_body += f"• Archivo procesado: {excel_filename}\n"
+                        notification_body += f"• IMEIs extraídos: {total_imeis}\n"
+
+                    # Indicar si hay PDF adjunto
+                    if pdf_file_path and os.path.exists(pdf_file_path):
+                        notification_body += "\n📎 Se adjunta un reporte detallado en formato PDF con el análisis completo.\n"
+                    elif text_file_path and os.path.exists(text_file_path):
+                        notification_body += "\n📎 Se adjunta un archivo de resumen con los datos procesados.\n"
+
+                    # Pie de mensaje
+                    notification_body += "\n---\nEste es un mensaje automático de BotLibertyBD (Procesamiento Manual)."
+
+                    # Enviar correo con adjunto (preferir PDF, luego TXT, sino sin adjunto)
+                    attachment_to_send = None
+                    if pdf_file_path and os.path.exists(pdf_file_path):
+                        attachment_to_send = pdf_file_path
+                    elif text_file_path and os.path.exists(text_file_path):
+                        attachment_to_send = text_file_path
+
+                    if attachment_to_send:
+                        success, message = self.send_email_with_attachment(
+                            notify_email,
+                            notification_subject,
+                            notification_body,
+                            attachment_to_send
+                        )
+                    else:
+                        success, message = self.send_simple_email(
+                            notify_email,
+                            notification_subject,
+                            notification_body
+                        )
+
+                    if success:
+                        results["notified_users"] += 1
+                        if status_callback:
+                            status_callback(f"✉ Notificación enviada a {notify_email}", "SUCCESS")
+                    else:
+                        error_msg = f"Error al notificar a {notify_email}: {message}"
+                        results["errors"].append(error_msg)
+                        if status_callback:
+                            status_callback(error_msg, "ERROR")
+
+            elif not send_notifications and status_callback:
+                status_callback("ℹ Notificaciones desactivadas - No se enviaron correos", "INFO")
+
+            # Marcar como exitoso
+            results["success"] = True
+            results["message"] = f"Procesamiento completado: {total_imeis} IMEIs, {results['notified_users']} notificaciones enviadas"
+
+            if status_callback:
+                status_callback("✓ Procesamiento manual completado exitosamente", "SUCCESS")
+
+        except Exception as e:
+            error_msg = f"Error en procesamiento manual: {str(e)}"
+            results["errors"].append(error_msg)
+            results["message"] = error_msg
+            if status_callback:
+                status_callback(error_msg, "ERROR")
+            logger.error(error_msg)
+
+        finally:
+            # Limpiar archivos temporales
+            try:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                    if status_callback:
+                        status_callback("🗑 Archivos temporales eliminados", "INFO")
+            except Exception as e:
+                logger.warning(f"No se pudieron eliminar archivos temporales: {e}")
+
+        return results
