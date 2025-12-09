@@ -47,9 +47,9 @@ class CargaManualDialog(tk.Toplevel):
     def _setup_window(self):
         """Configura las propiedades básicas de la ventana."""
         self.title("Carga Manual de Excel")
-        self.geometry("600x500")
+        self.geometry("600x700")
         self.grab_set()  # Modal
-        self.resizable(False, False)
+        self.resizable(True, True)
 
         # Centrar en pantalla
         self.update_idletasks()
