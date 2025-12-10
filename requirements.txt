@@ -1,8 +1,10 @@
 # BotLibertyBD - Dependencias del Proyecto
 # Bot de automatización de correos con integración PostgreSQL
+# ⚠️ MIGRADO A PSYCOPG V3 - Sistema Trustonic
 
 # Base de datos
-psycopg2-binary>=2.9.0
+psycopg>=3.1.0
+# psycopg2-binary>=2.9.0  # DEPRECADO: migrado a psycopg v3
 
 # Análisis de datos
 pandas>=1.5.0
@@ -17,8 +19,12 @@ openpyxl>=3.1.0
 reportlab>=4.0.0
 matplotlib>=3.5.0
 
+# Manejo de variables de entorno (para compatibilidad con código del compañero)
+python-dotenv>=1.0.0
+
 # Nota: Las siguientes librerías vienen incluidas con Python:
 # - smtplib (correo SMTP)
 # - imaplib (correo IMAP)
 # - email (procesamiento de mensajes)
 # - tkinter (interfaz gráfica base)
+# - zoneinfo (zonas horarias - Python 3.9+)
