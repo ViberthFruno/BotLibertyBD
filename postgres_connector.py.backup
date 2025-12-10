@@ -1,40 +1,51 @@
-# postgres_connector_v3.py
+# postgres_connector.py
 """
-Conector de PostgreSQL para la aplicación EnlaceDB - Versión psycopg v3.
-
-⚠️ MIGRADO A PSYCOPG V3 - Sistema Trustonic Trade-In
+Conector de PostgreSQL para la aplicación EnlaceDB.
 
 Este archivo proporciona funcionalidades para conectarse a una base de datos PostgreSQL,
 ejecutar consultas y gestionar las conexiones de manera segura con manejo de errores
-apropiado y registros detallados, incluyendo soporte para:
-- Diferentes configuraciones de SSL
-- Tipos compuestos de PostgreSQL
-- Funciones PL/pgSQL con tipos compuestos
-- Compatibilidad con código legacy
-
-Versión: 2.0.0 (psycopg v3)
-Fecha: 2025-12-10
+apropiado y registros detallados, incluyendo soporte para diferentes configuraciones de SSL
+y un sistema robusto de detección automática de la configuración óptima para cada servidor.
 """
 
 import traceback
-from datetime import date, datetime, time
-from uuid import UUID
 from logger import logger
+from datetime import date, datetime, time
 
-# Intentar importar psycopg v3 con manejo de errores
+# Intentar importar el módulo de PostgreSQL con manejo de errores
 try:
-    import psycopg
-    from psycopg import sql, OperationalError, DatabaseError
-    from psycopg.types.composite import CompositeInfo, register_composite
-    from psycopg.rows import dict_row
-    PSYCOPG_AVAILABLE = True
+    import psycopg2
+    from psycopg2 import OperationalError, DatabaseError
+    from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT, register_adapter
+    import psycopg2.extras
+
+
+    # Registrar adaptadores para tipos de datos comunes
+    def adapt_date(d):
+        return psycopg2.extensions.AsIs("'%s'::date" % d.isoformat())
+
+
+    def adapt_datetime(dt):
+        return psycopg2.extensions.AsIs("'%s'::timestamp" % dt.isoformat(sep=' ', timespec='seconds'))
+
+
+    def adapt_time(t):
+        return psycopg2.extensions.AsIs("'%s'::time" % t.strftime('%H:%M:%S'))
+
+
+    # Registrar adaptadores para tipos más específicos
+    register_adapter(date, adapt_date)
+    register_adapter(datetime, adapt_datetime)
+    register_adapter(time, adapt_time)
+
+    PSYCOPG2_AVAILABLE = True
 except ImportError:
-    logger.warning("Módulo psycopg no disponible. La funcionalidad de PostgreSQL estará limitada.")
-    PSYCOPG_AVAILABLE = False
+    logger.warning("Módulo psycopg2 no disponible. La funcionalidad de PostgreSQL estará limitada.")
+    PSYCOPG2_AVAILABLE = False
 
 
 class PostgresConnector:
-    """Clase para manejar la conexión y operaciones con bases de datos PostgreSQL (psycopg v3)."""
+    """Clase para manejar la conexión y operaciones con bases de datos PostgreSQL."""
 
     def __init__(self, host="localhost", port="5432", database="postgres", username="postgres", password="",
                  sslmode="require"):
@@ -55,6 +66,7 @@ class PostgresConnector:
         self.username = username
         self.password = password
         self.connection = None
+        self.cursor = None
 
         # Permitir que el usuario defina un modo SSL inicial explícito
         normalized_sslmode = sslmode.strip() if isinstance(sslmode, str) else sslmode
@@ -81,23 +93,15 @@ class PostgresConnector:
 
         return value
 
-    def _build_connection_string(self, extra_params=None):
-        """
-        Construye el connection string para psycopg v3.
-
-        Args:
-            extra_params: Parámetros adicionales para la conexión
-
-        Returns:
-            str: Connection string listo para usar
-        """
+    def _build_connection_parameters(self, extra_params=None):
+        """Construye los parámetros de conexión preparados para psycopg2."""
         params = {
             "host": self.host,
             "port": self.port,
             "dbname": self.database,
             "user": self.username,
             "password": self.password,
-            "connect_timeout": "10",
+            "connect_timeout": 10,  # Timeout de 10 segundos para evitar bloqueos
         }
 
         if extra_params:
@@ -106,25 +110,13 @@ class PostgresConnector:
         if self.ssl_mode and "sslmode" not in params:
             params["sslmode"] = self.ssl_mode
 
-        # Normalizar valores
         prepared_params = {}
         for key, value in params.items():
             normalized = self._normalize_connection_value(value)
             if normalized is not None:
                 prepared_params[key] = normalized
 
-        # Construir connection string
-        # psycopg v3 acepta connection string tipo libpq
-        conn_parts = []
-        for key, value in prepared_params.items():
-            # Escapar valores con espacios o caracteres especiales
-            if ' ' in str(value) or "'" in str(value):
-                value_escaped = str(value).replace("'", "\\'")
-                conn_parts.append(f"{key}='{value_escaped}'")
-            else:
-                conn_parts.append(f"{key}={value}")
-
-        return " ".join(conn_parts)
+        return prepared_params
 
     def test_connection(self):
         """
@@ -133,8 +125,8 @@ class PostgresConnector:
         Returns:
             tuple: (bool, str) - Éxito de la conexión y mensaje descriptivo.
         """
-        if not PSYCOPG_AVAILABLE:
-            return False, "El módulo psycopg no está instalado. Por favor, instálelo para usar esta funcionalidad."
+        if not PSYCOPG2_AVAILABLE:
+            return False, "El módulo psycopg2 no está instalado. Por favor, instálelo para usar esta funcionalidad."
 
         # Lista de configuraciones SSL a probar
         ssl_configs = []
@@ -148,23 +140,35 @@ class PostgresConnector:
             if not any(cfg.get("sslmode") == mode for cfg in ssl_configs):
                 ssl_configs.append({"sslmode": mode})
 
-        # Finalmente probar sin especificar SSL
+        # Finalmente probar sin especificar SSL para utilizar la configuración por defecto del servidor
         ssl_configs.append({})
 
         last_error = None
         original_ssl_mode = self.ssl_mode
-
         for ssl_config in ssl_configs:
             try:
+                # Intentar conectarse con esta configuración
                 logger.info(f"Probando conexión a PostgreSQL con configuración: {ssl_config}")
 
-                conn_string = self._build_connection_string(ssl_config)
+                conn_params = self._build_connection_parameters(ssl_config)
 
-                # Intentar conectar usando psycopg v3
-                with psycopg.connect(conn_string, autocommit=True) as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT version();")
-                        version = cur.fetchone()[0]
+                log_conn_params = conn_params.copy()
+                if "password" in log_conn_params:
+                    log_conn_params["password"] = "*****"
+                logger.debug(f"Parámetros de conexión: {log_conn_params}")
+
+                # Establecer la conexión utilizando parámetros explícitos para manejar codificaciones
+                connection = psycopg2.connect(**conn_params)
+                connection.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+                cursor = connection.cursor()
+
+                # Ejecutar una consulta simple para verificar la conexión
+                cursor.execute("SELECT version();")
+                version = cursor.fetchone()
+
+                # Cerrar cursor y conexión
+                cursor.close()
+                connection.close()
 
                 # Guardar la configuración SSL exitosa
                 if "sslmode" in ssl_config and ssl_config["sslmode"]:
@@ -173,8 +177,9 @@ class PostgresConnector:
                     fallback_mode = original_ssl_mode or "prefer"
                     self.ssl_mode = self._normalize_connection_value(fallback_mode)
 
+                # Registro exitoso
                 logger.info(f"Conexión a PostgreSQL exitosa con configuración: {ssl_config}")
-                return True, f"Conexión exitosa. Versión del servidor: {version}"
+                return True, f"Conexión exitosa. Versión del servidor: {version[0]}"
 
             except (OperationalError, DatabaseError) as e:
                 error_msg = f"Error con configuración {ssl_config}: {str(e)}"
@@ -200,37 +205,41 @@ class PostgresConnector:
             f"5. Si está intentando usar SSL, asegúrese de que el servidor lo soporte."
         )
 
+        # Restaurar el modo SSL original si no se logró establecer conexión
         self.ssl_mode = original_ssl_mode
+
         logger.error(detailed_error)
         logger.debug(traceback.format_exc())
         return False, detailed_error
 
     def connect(self):
         """
-        Establece una conexión persistente a la base de datos PostgreSQL.
+        Establece una conexión a la base de datos PostgreSQL usando la configuración SSL
+        determinada previamente durante la prueba de conexión.
 
         Returns:
             bool: True si la conexión fue exitosa, False en caso contrario.
         """
-        if not PSYCOPG_AVAILABLE:
-            logger.error("No se puede conectar: el módulo psycopg no está disponible")
+        if not PSYCOPG2_AVAILABLE:
+            logger.error("No se puede conectar: el módulo psycopg2 no está disponible")
             return False
 
         try:
             # Cerrar cualquier conexión existente primero
             self.disconnect()
 
-            conn_string = self._build_connection_string()
+            conn_params = self._build_connection_parameters()
 
             logger.info(
                 f"Conectando a PostgreSQL: {self.host}:{self.port}/{self.database} (SSL: {self.ssl_mode or 'prefer'})")
 
-            # Establecer la conexión con autocommit y row_factory dict_row
-            self.connection = psycopg.connect(
-                conn_string,
-                autocommit=True,
-                row_factory=dict_row  # Permite acceder a las columnas por nombre
+            # Establecer la conexión con soporte para tipos de datos adicionales
+            self.connection = psycopg2.connect(
+                cursor_factory=psycopg2.extras.DictCursor,  # Permite acceder a las columnas por nombre
+                **conn_params
             )
+            self.connection.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+            self.cursor = self.connection.cursor()
 
             logger.info("Conexión establecida con éxito")
             return True
@@ -246,8 +255,15 @@ class PostgresConnector:
             return False
 
     def disconnect(self):
-        """Cierra la conexión a la base de datos PostgreSQL."""
+        """
+        Cierra la conexión a la base de datos PostgreSQL.
+        """
         try:
+            if self.cursor:
+                self.cursor.close()
+                self.cursor = None
+                logger.debug("Cursor cerrado")
+
             if self.connection:
                 self.connection.close()
                 self.connection = None
@@ -263,51 +279,64 @@ class PostgresConnector:
 
         Args:
             query (str): Consulta SQL a ejecutar.
-            params (tuple, optional): Parámetros para la consulta.
+            params (tuple, optional): Parámetros para la consulta. Por defecto es None.
 
         Returns:
             list: Resultados de la consulta, o None si hay error.
         """
-        if not PSYCOPG_AVAILABLE:
-            logger.error("No se puede ejecutar consulta: el módulo psycopg no está disponible")
+        if not PSYCOPG2_AVAILABLE:
+            logger.error("No se puede ejecutar consulta: el módulo psycopg2 no está disponible")
             return None
 
-        if not self.connection:
+        if not self.connection or not self.cursor:
             if not self.connect():
                 return None
 
         try:
-            with self.connection.cursor() as cur:
-                # Ejecutar la consulta
-                if params:
-                    safe_query = f"{query} [con {len(params) if isinstance(params, (list, tuple)) else 1} parámetros]"
-                    logger.debug(f"Ejecutando consulta: {safe_query}")
-                    cur.execute(query, params)
-                else:
-                    logger.debug(f"Ejecutando consulta: {query}")
-                    cur.execute(query)
+            # Ejecutar la consulta
+            if params:
+                # Registrar la consulta sin mostrar valores sensibles
+                safe_query = query
+                if isinstance(params, (list, tuple)) and len(params) > 0:
+                    safe_query = f"{query} [con {len(params)} parámetros]"
+                logger.debug(f"Ejecutando consulta: {safe_query}")
 
-                # Si es una consulta SELECT, retornar los resultados
-                if query.strip().upper().startswith("SELECT"):
-                    results = cur.fetchall()
-                    logger.debug(f"Consulta SELECT completada, {len(results)} filas obtenidas")
-                    return results
+                self.cursor.execute(query, params)
+            else:
+                logger.debug(f"Ejecutando consulta: {query}")
+                self.cursor.execute(query)
 
-                # Si es una consulta de modificación, retornar True
-                logger.debug("Consulta de modificación completada")
-                return True
+            # Si es una consulta SELECT, retornar los resultados
+            if query.strip().upper().startswith("SELECT"):
+                results = self.cursor.fetchall()
+                logger.debug(f"Consulta SELECT completada, {len(results)} filas obtenidas")
+                return results
+
+            # Si es una consulta de modificación, retornar True para indicar éxito
+            logger.debug("Consulta de modificación completada")
+            return True
 
         except Exception as e:
             logger.error(f"Error al ejecutar consulta: {str(e)}")
             logger.debug(f"Consulta: {query}")
             if params:
                 try:
+                    # Intentar registrar los parámetros sin revelar datos sensibles
                     param_count = len(params) if isinstance(params, (list, tuple)) else 1
                     logger.debug(f"Con {param_count} parámetros")
                 except:
                     pass
 
             logger.debug(traceback.format_exc())
+
+            # Intentar hacer rollback en caso de error
+            try:
+                if self.connection:
+                    self.connection.rollback()
+                    logger.debug("Rollback ejecutado")
+            except Exception as rollback_error:
+                logger.error(f"Error al hacer rollback: {str(rollback_error)}")
+
             return None
 
     def table_exists(self, schema, table):
@@ -323,20 +352,14 @@ class PostgresConnector:
         """
         query = """
         SELECT EXISTS (
-            SELECT FROM information_schema.tables
+            SELECT FROM information_schema.tables 
             WHERE table_schema = %s
             AND table_name = %s
         );
         """
 
         result = self.execute_query(query, (schema, table))
-        if result and len(result) > 0:
-            # psycopg v3 con dict_row retorna diccionarios
-            if isinstance(result[0], dict):
-                return result[0].get('exists', False)
-            else:
-                return result[0][0]
-        return False
+        return result and result[0][0]
 
     def column_exists(self, schema, table, column):
         """
@@ -352,7 +375,7 @@ class PostgresConnector:
         """
         query = """
         SELECT EXISTS (
-            SELECT FROM information_schema.columns
+            SELECT FROM information_schema.columns 
             WHERE table_schema = %s
             AND table_name = %s
             AND column_name = %s
@@ -360,12 +383,7 @@ class PostgresConnector:
         """
 
         result = self.execute_query(query, (schema, table, column))
-        if result and len(result) > 0:
-            if isinstance(result[0], dict):
-                return result[0].get('exists', False)
-            else:
-                return result[0][0]
-        return False
+        return result and result[0][0]
 
     def schema_exists(self, schema):
         """Verifica si un esquema existe en la base de datos."""
@@ -375,12 +393,7 @@ class PostgresConnector:
         );
         """
         result = self.execute_query(query, (schema,))
-        if result and len(result) > 0:
-            if isinstance(result[0], dict):
-                return result[0].get('exists', False)
-            else:
-                return result[0][0]
-        return False
+        return result and result[0][0]
 
     def get_column_type(self, schema, table, column):
         """
@@ -403,12 +416,7 @@ class PostgresConnector:
         """
 
         result = self.execute_query(query, (schema, table, column))
-        if result and len(result) > 0:
-            if isinstance(result[0], dict):
-                return result[0].get('data_type')
-            else:
-                return result[0][0]
-        return None
+        return result[0][0] if result and result[0] else None
 
     def ensure_imei_table_exists(self, schema, table):
         """
@@ -462,108 +470,9 @@ class PostgresConnector:
             logger.debug(traceback.format_exc())
             return False
 
-    # ============================================================================
-    # NUEVO: Métodos para trabajar con tipos compuestos (Trustonic)
-    # ============================================================================
-
-    def call_trustonic_function(self, usuario_id: UUID, registros: list[tuple]) -> dict:
-        """
-        Llama a la función PL/pgSQL de Trustonic usando tipos compuestos.
-
-        Args:
-            usuario_id: UUID del usuario que ejecuta la operación
-            registros: Lista de tuplas (imei_serie: str, fecha_cliente: datetime)
-
-        Returns:
-            dict: Resultado de la función (parseado desde JSONB)
-
-        Example:
-            >>> from datetime import datetime
-            >>> from zoneinfo import ZoneInfo
-            >>> from uuid import UUID
-            >>> registros = [
-            ...     ('123456789012345', datetime(2024, 1, 15, tzinfo=ZoneInfo('America/Costa_Rica'))),
-            ...     ('234567890123456', datetime(2024, 1, 16, tzinfo=ZoneInfo('America/Costa_Rica')))
-            ... ]
-            >>> resultado = connector.call_trustonic_function(UUID('...'), registros)
-        """
-        if not PSYCOPG_AVAILABLE:
-            logger.error("No se puede ejecutar función: el módulo psycopg no está disponible")
-            return {
-                'exito': False,
-                'error': 'Módulo psycopg no disponible'
-            }
-
-        if not self.connection:
-            if not self.connect():
-                return {
-                    'exito': False,
-                    'error': 'No se pudo establecer conexión a la base de datos'
-                }
-
-        try:
-            with self.connection.cursor() as cur:
-                # Registrar el tipo compuesto
-                info = CompositeInfo.fetch(self.connection, "registro_texto__fecha_tz")
-                if info is None:
-                    error_msg = "Tipo compuesto 'registro_texto__fecha_tz' no existe en la base de datos"
-                    logger.error(error_msg)
-                    return {
-                        'exito': False,
-                        'error': error_msg,
-                        'mensaje': 'Ejecute el script migration_to_trustonic.sql primero'
-                    }
-
-                register_composite(info, self.connection)
-                logger.debug("Tipo compuesto 'registro_texto__fecha_tz' registrado correctamente")
-
-                # Llamar a la función
-                query = """
-                SELECT canje.upd_lista_negra_tradein_trustonic_pa(%s::UUID, %s::canje.registro_texto__fecha_tz[])
-                """
-
-                logger.info(f"Llamando a función Trustonic con {len(registros)} registros")
-                logger.debug(f"Usuario: {usuario_id}")
-
-                cur.execute(query, (usuario_id, registros))
-                resultado_jsonb = cur.fetchone()[0]
-
-                logger.info("Función Trustonic ejecutada exitosamente")
-                return resultado_jsonb
-
-        except psycopg.errors.UndefinedFunction as e:
-            error_msg = "Función 'canje.upd_lista_negra_tradein_trustonic_pa' no existe"
-            logger.error(f"{error_msg}: {e}")
-            return {
-                'exito': False,
-                'error': error_msg,
-                'mensaje': 'Ejecute el script migration_to_trustonic.sql primero',
-                'detalle': str(e)
-            }
-        except psycopg.errors.InvalidTextRepresentation as e:
-            error_msg = "Error en formato de datos (posiblemente UUID inválido)"
-            logger.error(f"{error_msg}: {e}")
-            return {
-                'exito': False,
-                'error': error_msg,
-                'detalle': str(e)
-            }
-        except Exception as e:
-            logger.error(f"Error al ejecutar función Trustonic: {str(e)}")
-            logger.debug(traceback.format_exc())
-            return {
-                'exito': False,
-                'error': 'Error inesperado',
-                'mensaje': str(e)
-            }
-
-    # ============================================================================
-    # LEGACY: Método sync_imeis original (mantenido para compatibilidad)
-    # ============================================================================
-
     def sync_imeis(self, schema, table, excel_data):
         """
-        Sincroniza los IMEIs del Excel con la base de datos (método legacy).
+        Sincroniza los IMEIs del Excel con la base de datos.
 
         🔥 IMPORTANTE: EL BOT NO ELIMINA NADA DE LA BASE DE DATOS - NUNCA
 
@@ -571,6 +480,8 @@ class PostgresConnector:
         1. IMEIs nuevos (en Excel, no en BD) -> INSERT
         2. IMEIs existentes (en Excel y en BD) -> UPDATE
         3. IMEIs "desactivados" (en BD, no en Excel) -> UPDATE activo=false
+           NOTA: "Desactivados" significa que están en la BD pero NO aparecen en el Excel recibido.
+           Estos IMEIs NO se eliminan, solo se marcan como activo=false.
 
         Args:
             schema (str): Nombre del esquema.
@@ -578,7 +489,18 @@ class PostgresConnector:
             excel_data (list): Lista de diccionarios con keys 'imei' y 'fecha_cliente'.
 
         Returns:
-            dict: Resultado de la sincronización con estadísticas
+            dict: {
+                'success': bool,
+                'nuevos': int,                    # Cantidad de nuevos
+                'actualizados': int,              # Cantidad de actualizados
+                'desactivados': int,              # Cantidad de desactivados
+                'total': int,                     # Total procesado del Excel
+                'nuevos_list': [],                # Lista detallada de nuevos
+                'actualizados_list': [],          # Lista detallada de actualizados
+                'desactivados_list': [],          # Lista detallada de desactivados
+                'sin_cambios': [],                # Lista de IMEIs sin cambios
+                'errors': []
+            }
         """
         result = {
             'success': False,
@@ -599,23 +521,16 @@ class PostgresConnector:
                 result['errors'].append("No se pudo asegurar la existencia de la tabla")
                 return result
 
-            # Obtener todos los IMEIs de la base de datos
+            # Obtener todos los IMEIs de la base de datos con sus datos actuales
             query_get_all = f'SELECT imei_serie, fecha_cliente, activo FROM "{schema}"."{table}";'
             db_imeis_result = self.execute_query(query_get_all)
 
             db_imeis_dict = {}
             if db_imeis_result:
                 for row in db_imeis_result:
-                    # Manejar tanto dict (psycopg v3) como tuple (legacy)
-                    if isinstance(row, dict):
-                        imei_serie = row['imei_serie']
-                        fecha_bd = row['fecha_cliente']
-                        activo_bd = row['activo']
-                    else:
-                        imei_serie = row[0]
-                        fecha_bd = row[1]
-                        activo_bd = row[2]
-
+                    imei_serie = row[0]
+                    fecha_bd = row[1]
+                    activo_bd = row[2]
                     db_imeis_dict[imei_serie] = {
                         'fecha_cliente': fecha_bd,
                         'activo': activo_bd
@@ -626,7 +541,7 @@ class PostgresConnector:
             # Obtener IMEIs del Excel
             excel_imeis = {item['imei'] for item in excel_data if item.get('imei')}
 
-            # Caso 1: IMEIs nuevos
+            # Caso 1: IMEIs nuevos (en Excel, no en BD)
             nuevos_imeis = excel_imeis - db_imeis
             for imei_data in excel_data:
                 imei = imei_data.get('imei')
@@ -647,7 +562,7 @@ class PostgresConnector:
                     else:
                         result['errors'].append(f"Error al insertar IMEI: {imei}")
 
-            # Caso 2: IMEIs existentes
+            # Caso 2: IMEIs existentes (en Excel y en BD) -> Verificar si necesitan actualización
             existentes_imeis = excel_imeis & db_imeis
             for imei_data in excel_data:
                 imei = imei_data.get('imei')
@@ -656,14 +571,17 @@ class PostgresConnector:
                     fecha_bd = db_imeis_dict[imei]['fecha_cliente']
                     activo_bd = db_imeis_dict[imei]['activo']
 
+                    # Verificar si hay cambios
                     fecha_cambio = False
                     if fecha_cliente is not None and fecha_bd is not None:
+                        # Comparar fechas normalizando a solo fecha (sin hora)
                         fecha_excel_norm = fecha_cliente.date() if hasattr(fecha_cliente, 'date') else fecha_cliente
                         fecha_bd_norm = fecha_bd.date() if hasattr(fecha_bd, 'date') else fecha_bd
                         fecha_cambio = fecha_excel_norm != fecha_bd_norm
                     elif fecha_cliente != fecha_bd:
                         fecha_cambio = True
 
+                    # Solo actualizar si hay cambios en fecha o si estaba inactivo
                     if fecha_cambio or not activo_bd:
                         update_query = f"""
                         UPDATE "{schema}"."{table}"
@@ -685,12 +603,14 @@ class PostgresConnector:
                         else:
                             result['errors'].append(f"Error al actualizar IMEI: {imei}")
                     else:
+                        # Sin cambios
                         result['sin_cambios'].append({
                             'imei': imei,
                             'fecha_cliente': fecha_cliente
                         })
 
-            # Caso 3: IMEIs obsoletos (soft delete)
+            # Caso 3: IMEIs obsoletos (en BD, no en Excel) -> Marcar como inactivos
+            # 🔥 ESTOS NO SE ELIMINAN, SOLO SE MARCAN COMO INACTIVOS
             obsoletos_imeis = db_imeis - excel_imeis
             for imei in obsoletos_imeis:
                 update_query = f"""
@@ -710,10 +630,7 @@ class PostgresConnector:
                     result['errors'].append(f"Error al desactivar IMEI: {imei}")
 
             result['success'] = True
-            logger.info(
-                f"Sincronización completada: {result['nuevos']} nuevos, "
-                f"{result['actualizados']} actualizados, {result['desactivados']} desactivados"
-            )
+            logger.info(f"Sincronización completada: {result['nuevos']} nuevos, {result['actualizados']} actualizados, {result['desactivados']} desactivados")
 
         except Exception as e:
             error_msg = f"Error durante la sincronización: {str(e)}"
@@ -724,17 +641,11 @@ class PostgresConnector:
         return result
 
 
-def is_psycopg_installed():
+def is_psycopg2_installed():
     """
-    Verifica si el módulo psycopg está instalado.
+    Verifica si el módulo psycopg2 está instalado.
 
     Returns:
         bool: True si está instalado, False en caso contrario.
     """
-    return PSYCOPG_AVAILABLE
-
-
-# Alias para compatibilidad con código que busca is_psycopg2_installed
-def is_psycopg2_installed():
-    """Alias para compatibilidad con código legacy."""
-    return PSYCOPG_AVAILABLE
+    return PSYCOPG2_AVAILABLE
